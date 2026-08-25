@@ -632,6 +632,62 @@ class PieceManager:
 
             return b"".join(p.get_data() for p in self.pieces)  # type: ignore
 
+    def verify_piece(self, piece_index: int, data: Union[bytes, bytearray, memoryview]) -> bool:
+        """
+        Verifica se os dados brutos de uma peça conferem com seu hash SHA-1 esperado.
+        Se válidos, marca a peça como COMPLETED, define os blocos como RECEIVED e atualiza o bitfield.
+        Retorna True se válida, False se inválida ou corrompida.
+        """
+        with self._lock:
+            if not (0 <= piece_index < self.num_pieces):
+                return False
+            piece = self.get_piece(piece_index)
+            raw_bytes = bytes(data)
+            if len(raw_bytes) != piece.length:
+                return False
+            if verify_sha1(raw_bytes, piece.expected_hash):
+                piece._data = raw_bytes
+                piece.state = PieceState.COMPLETED
+                for b in piece.blocks:
+                    b.state = BlockState.RECEIVED
+                    b.data = raw_bytes[b.begin : b.begin + b.length]
+                self.bitfield.set_piece(piece_index, True)
+                return True
+            else:
+                piece.reset()
+                return False
+
+    def check_existing_data(self, data: Union[bytes, bytearray, memoryview]) -> int:
+        """
+        Verifica dados existentes (ex: de arquivo parcial) e valida cada peça por SHA-1.
+        Retorna a quantidade de peças válidas encontradas e completadas.
+        """
+        raw = bytes(data)
+        valid_count = 0
+        with self._lock:
+            offset = 0
+            for i, piece in enumerate(self.pieces):
+                if offset + piece.length <= len(raw):
+                    piece_data = raw[offset : offset + piece.length]
+                    if self.verify_piece(i, piece_data):
+                        valid_count += 1
+                offset += piece.length
+        return valid_count
+
+    def check_existing_file(self, target_path: Union[str, Path]) -> int:
+        """
+        Lê um arquivo existente no disco e valida cada uma das suas peças por SHA-1.
+        Peças válidas são marcadas como completadas e não serão re-baixadas.
+        """
+        path = Path(target_path)
+        if not path.is_file():
+            return 0
+        try:
+            file_data = path.read_bytes()
+            return self.check_existing_data(file_data)
+        except OSError:
+            return 0
+
     def save_to_file(self, target_path: Union[str, Path]) -> None:
         """
         Grava os dados reconstruídos do torrent em um arquivo no disco.
