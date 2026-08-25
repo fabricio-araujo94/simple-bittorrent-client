@@ -216,10 +216,15 @@ class TorrentClient:
         effective_max_in_flight = max_in_flight if max_in_flight is not None else self.max_in_flight
         self._register_connection(conn)
         in_flight: Dict[Tuple[int, int], int] = {}  # (piece_idx, begin) -> length
+        registered_bitfield: Optional[Bitfield] = None
 
         try:
             # 1. Envia 'Interested'
             conn.send_interested()
+
+            if conn.peer_bitfield is not None:
+                registered_bitfield = conn.peer_bitfield
+                self.piece_manager.add_peer_bitfield(registered_bitfield)
 
             consecutive_no_requests = 0
             iteration = 0
@@ -301,12 +306,19 @@ class TorrentClient:
                 elif isinstance(msg, HaveMessage):
                     if conn.peer_bitfield is None:
                         conn.peer_bitfield = Bitfield(num_pieces=self.torrent_meta.num_pieces)
+                        registered_bitfield = conn.peer_bitfield
                     if msg.piece_index < conn.peer_bitfield.num_pieces:
-                        conn.peer_bitfield.set_piece(msg.piece_index, True)
+                        if not conn.peer_bitfield.has_piece(msg.piece_index):
+                            conn.peer_bitfield.set_piece(msg.piece_index, True)
+                            self.piece_manager.update_peer_have(msg.piece_index)
                     consecutive_no_requests = 0
 
                 elif isinstance(msg, BitfieldMessage):
+                    if registered_bitfield is not None:
+                        self.piece_manager.remove_peer_bitfield(registered_bitfield)
                     conn.peer_bitfield = msg.to_bitfield(self.torrent_meta.num_pieces)
+                    registered_bitfield = conn.peer_bitfield
+                    self.piece_manager.add_peer_bitfield(registered_bitfield)
                     consecutive_no_requests = 0
 
                 elif isinstance(msg, KeepAliveMessage):
@@ -322,6 +334,8 @@ class TorrentClient:
             for (p_idx, b_begin) in list(in_flight.keys()):
                 self.piece_manager.reset_block(p_idx, b_begin)
             in_flight.clear()
+            if registered_bitfield is not None:
+                self.piece_manager.remove_peer_bitfield(registered_bitfield)
             self._unregister_connection(conn)
 
     def download_from_peer(

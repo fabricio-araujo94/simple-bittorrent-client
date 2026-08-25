@@ -351,6 +351,7 @@ class PieceManager:
         self.num_pieces = len(hashes_list)
         self.bitfield = Bitfield(num_pieces=self.num_pieces)
         self.pieces: List[Piece] = self._init_pieces(hashes_list)
+        self._availability: List[int] = [0] * self.num_pieces
 
     def _init_pieces(self, piece_hashes: Sequence[Union[bytes, bytearray]]) -> List[Piece]:
         """Inicializa todas as instâncias de Piece calculando o tamanho exato de cada uma."""
@@ -457,38 +458,126 @@ class PieceManager:
 
             return added, completed
 
+    # ==============================================================================
+    # Rastreamento de Disponibilidade (Rarest First / BEP 0003)
+    # ==============================================================================
+
+    def add_peer_bitfield(self, bitfield: Optional[Bitfield]) -> None:
+        """
+        Incrementa a disponibilidade de cada peça presente no bitfield do novo peer.
+        """
+        if bitfield is None:
+            return
+        with self._lock:
+            for i in range(min(self.num_pieces, bitfield.num_pieces)):
+                if bitfield.has_piece(i):
+                    self._availability[i] += 1
+
+    def remove_peer_bitfield(self, bitfield: Optional[Bitfield]) -> None:
+        """
+        Decrementa a disponibilidade de cada peça quando um peer desconecta.
+        """
+        if bitfield is None:
+            return
+        with self._lock:
+            for i in range(min(self.num_pieces, bitfield.num_pieces)):
+                if bitfield.has_piece(i):
+                    self._availability[i] = max(0, self._availability[i] - 1)
+
+    def update_peer_have(self, piece_index: int) -> None:
+        """
+        Incrementa a disponibilidade de uma peça ao receber mensagem Have de um peer.
+        """
+        with self._lock:
+            if 0 <= piece_index < self.num_pieces:
+                self._availability[piece_index] += 1
+
+    def decrement_piece_availability(self, piece_index: int) -> None:
+        """
+        Decrementa a disponibilidade de uma peça específica.
+        """
+        with self._lock:
+            if 0 <= piece_index < self.num_pieces:
+                self._availability[piece_index] = max(0, self._availability[piece_index] - 1)
+
+    def get_piece_availability(self, piece_index: int) -> int:
+        """
+        Retorna a contagem atual de disponibilidade (quantos peers possuem) para a peça informada.
+        """
+        with self._lock:
+            if not (0 <= piece_index < self.num_pieces):
+                raise IndexError(
+                    f"Índice de peça fora do intervalo: {piece_index} (total: {self.num_pieces})"
+                )
+            return self._availability[piece_index]
+
+    def get_all_availabilities(self) -> List[int]:
+        """
+        Retorna uma cópia da lista de disponibilidades de todas as peças.
+        """
+        with self._lock:
+            return list(self._availability)
+
     def get_next_block_to_request(
         self,
         peer_bitfield: Optional[Bitfield] = None,
+        tie_breaker: str = "index",
     ) -> Optional[Tuple[int, int, int]]:
         """
-        Seleciona thread-safe o próximo bloco a ser requisitado a um peer.
+        Seleciona thread-safe o próximo bloco a ser requisitado a um peer seguindo
+        a estratégia Rarest First (BEP 0003).
 
-        Estratégia:
-        1. Prioriza peças que já estão em andamento (`DOWNLOADING`) para completá-las o mais rápido possível;
-        2. Em seguida, seleciona peças pendentes (`MISSING`) que o peer possua em seu bitfield.
+        Estratégia de Priorização e Desempate:
+        1. Filtra peças não concluídas (MISSING ou DOWNLOADING) que o peer possua
+           em seu bitfield (`peer_bitfield.has_piece(piece.index)`);
+        2. Prioriza peças já em andamento (`DOWNLOADING`) para finalizar blocos pendentes;
+        3. Prioriza peças com menor disponibilidade no enxame (Rarest First);
+        4. Desempate determinístico: entre peças com mesma prioridade/raridade,
+           utiliza o menor índice (`piece.index`) como critério padrão.
 
         Returns:
             Optional[Tuple[int, int, int]]: (piece_index, begin, length) ou None se não houver blocos disponíveis.
         """
         with self._lock:
-            # 1. Tenta encontrar blocos faltantes em peças já em progresso
+            # 1. Coleta peças elegíveis (não concluídas e que o peer possui)
+            eligible_pieces: List[Piece] = []
             for piece in self.pieces:
-                if piece.state == PieceState.DOWNLOADING:
-                    if peer_bitfield is not None and not peer_bitfield.has_piece(piece.index):
-                        continue
-                    block = piece.get_next_missing_block(mark_requested=True)
-                    if block is not None:
-                        return piece.index, block.begin, block.length
+                if piece.is_completed() or piece.state == PieceState.COMPLETED:
+                    continue
+                if peer_bitfield is not None and not peer_bitfield.has_piece(piece.index):
+                    continue
+                eligible_pieces.append(piece)
 
-            # 2. Tenta encontrar blocos em peças ainda não iniciadas (MISSING)
-            for piece in self.pieces:
-                if piece.state == PieceState.MISSING:
-                    if peer_bitfield is not None and not peer_bitfield.has_piece(piece.index):
-                        continue
-                    block = piece.get_next_missing_block(mark_requested=True)
-                    if block is not None:
-                        return piece.index, block.begin, block.length
+            if not eligible_pieces:
+                return None
+
+            # 2. Ordena com base na estratégia:
+            #    - DOWNLOADING primeiro (0 para DOWNLOADING, 1 para MISSING)
+            #    - Menor disponibilidade (Rarest First)
+            #    - Desempate: menor índice da peça (ou aleatório se tie_breaker="random")
+            if tie_breaker == "random":
+                import random
+                eligible_pieces.sort(
+                    key=lambda p: (
+                        1 if p.state == PieceState.MISSING else 0,
+                        self._availability[p.index],
+                        random.random(),
+                    )
+                )
+            else:
+                eligible_pieces.sort(
+                    key=lambda p: (
+                        1 if p.state == PieceState.MISSING else 0,
+                        self._availability[p.index],
+                        p.index,
+                    )
+                )
+
+            # 3. Extrai o próximo bloco pendente da primeira peça que possuir blocos
+            for piece in eligible_pieces:
+                block = piece.get_next_missing_block(mark_requested=True)
+                if block is not None:
+                    return piece.index, block.begin, block.length
 
             return None
 
