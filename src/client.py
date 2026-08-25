@@ -36,9 +36,11 @@ from .peer import (
     Bitfield,
     BitfieldMessage,
     ChokeMessage,
+    HandshakeError,
     HaveMessage,
     InterestedMessage,
     KeepAliveMessage,
+    MessageSizeError,
     NotInterestedMessage,
     PeerConnection,
     PeerConnectionClosedError,
@@ -63,6 +65,16 @@ class DownloadError(Exception):
 
 class DownloadIncompleteError(DownloadError):
     """Exceção lançada quando o download termina sem que todas as peças tenham sido obtidas."""
+    pass
+
+
+class NoPeersAvailableError(DownloadError):
+    """Exceção lançada quando o enxame não possui peers disponíveis ou nenhum responde."""
+    pass
+
+
+class TrackerUnavailableError(DownloadError):
+    """Exceção lançada quando nenhum dos trackers informados está acessível."""
     pass
 
 
@@ -95,6 +107,7 @@ class TorrentClient:
         peer_timeout: float = 10.0,
         tracker_timeout: float = 15.0,
         http_opener: Optional[Any] = None,
+        auto_resume: bool = False,
     ):
         # 1. Carrega e valida metadados do torrent
         if isinstance(torrent, TorrentMetadata):
@@ -136,6 +149,10 @@ class TorrentClient:
         self._active_connections: List[PeerConnection] = []
         self._active_connections_lock = threading.Lock()
 
+        # Verificação automática de arquivos existentes para retomada (resume)
+        if auto_resume and self.output_path is not None:
+            self.check_existing_files(self.output_path)
+
     @property
     def is_complete(self) -> bool:
         """Verifica se todas as peças do torrent foram baixadas e validadas."""
@@ -162,6 +179,34 @@ class TorrentClient:
             except Exception:
                 pass
 
+    def check_existing_files(self, target_destination: Optional[Union[str, Path]] = None) -> int:
+        """
+        Verifica se já existem arquivos parciais no disco e valida cada peça por SHA-1.
+        Peças válidas são marcadas como completadas e aproveitadas no download.
+        """
+        dest = Path(target_destination) if target_destination is not None else self.output_path
+        if dest is None:
+            return 0
+
+        if not self.torrent_meta.is_multi_file:
+            target_file = dest if not dest.is_dir() else dest / self.torrent_meta.name
+            return self.piece_manager.check_existing_file(target_file)
+        else:
+            base_dir = dest / self.torrent_meta.name if not dest.name == self.torrent_meta.name else dest
+            if not base_dir.is_dir():
+                return 0
+            try:
+                collected = bytearray()
+                for file_info in self.torrent_meta.files:
+                    file_path = base_dir.joinpath(*file_info.path)
+                    if file_path.is_file():
+                        collected.extend(file_path.read_bytes())
+                    else:
+                        collected.extend(b"\x00" * file_info.length)
+                return self.piece_manager.check_existing_data(collected)
+            except OSError:
+                return 0
+
     def get_progress(self) -> DownloadProgress:
         """Retorna o progresso atual do download."""
         downloaded = self.piece_manager.bytes_downloaded()
@@ -179,19 +224,39 @@ class TorrentClient:
 
     def discover_peers(self) -> List[PeerInfo]:
         """
-        Consulta o tracker HTTP para obter a lista de peers disponíveis.
+        Consulta o tracker HTTP (com fallback para múltiplos trackers se disponíveis)
+        para obter a lista de peers disponíveis no enxame.
         """
-        try:
-            resp: TrackerResponse = self.tracker_client.start(
-                uploaded=0,
-                downloaded=self.piece_manager.bytes_downloaded(),
-                left=self.piece_manager.bytes_left(),
-                timeout=self.tracker_timeout,
-            )
-            return resp.peers
-        except TrackerError as e:
-            logger.warning(f"Falha ao consultar tracker: {e}")
-            raise DownloadError(f"Erro ao obter peers do tracker: {e}") from e
+        trackers_to_try: List[str] = []
+        if self.torrent_meta.announce:
+            trackers_to_try.append(self.torrent_meta.announce)
+        if self.torrent_meta.trackers:
+            for tr in self.torrent_meta.trackers:
+                if tr not in trackers_to_try:
+                    trackers_to_try.append(tr)
+
+        if not trackers_to_try:
+            raise TrackerUnavailableError("Nenhuma URL de tracker configurada no torrent.")
+
+        last_error = None
+        for tracker_url in trackers_to_try:
+            try:
+                resp: TrackerResponse = self.tracker_client.announce(
+                    uploaded=0,
+                    downloaded=self.piece_manager.bytes_downloaded(),
+                    left=self.piece_manager.bytes_left(),
+                    event="started",
+                    timeout=self.tracker_timeout,
+                    tracker_url=tracker_url,
+                )
+                return resp.peers
+            except TrackerError as e:
+                logger.warning(f"Falha ao consultar tracker {tracker_url}: {e}")
+                last_error = e
+
+        if last_error is not None:
+            raise TrackerUnavailableError(f"Todos os trackers estão inacessíveis: {last_error}") from last_error
+        return []
 
     def download_from_peer_connection(
         self,
@@ -203,12 +268,12 @@ class TorrentClient:
         """
         Executa o ciclo de download com uma conexão de peer já estabelecida e com handshake realizado.
 
-        Recursos:
-        1. Pipelining de requisições (respeita max_in_flight);
-        2. Rastreamento e isolamento de requisições em voo exclusivas desta conexão;
-        3. Recepção assíncrona de blocos e controle de fluxo (Choke/Unchoke/Have/Bitfield);
-        4. Devolução atômica de blocos ao PieceManager em caso de choke ou desconexão;
-        5. Notificação de conclusão de peças (Have) aos outros peers.
+        Tratamento específico de erros:
+        - Queda/EOF: `PeerConnectionClosedError`
+        - Timeout: `PeerTimeoutError`
+        - Violações de protocolo: `HandshakeError`, `MessageSizeError`, `PeerProtocolError`
+        - Falha de rede: `PeerConnectionError`, `OSError`
+        - Dados malformados ou índices inesperados: `ValueError`, `IndexError`
 
         Returns:
             bool: True se o download do torrent foi concluído ou progrediu, False se desconectou/falhou.
@@ -255,7 +320,8 @@ class TorrentClient:
                         try:
                             msg = conn.read_message(timeout=self.peer_timeout)
                         except PeerTimeoutError:
-                            # Timeout aguardando unchoke
+                            # Peer permaneceu choked por tempo excessivo: libera worker para outro peer
+                            logger.debug(f"Peer {conn.peer_host}:{conn.peer_port} permaneceu choked após timeout.")
                             break
                     else:
                         # Unchoked, mas nenhum bloco pôde ser solicitado no momento (ex: peças já em voo em outros peers)
@@ -294,7 +360,7 @@ class TorrentClient:
 
                 elif isinstance(msg, ChokeMessage):
                     conn.peer_choking = True
-                    # Peer nos bloqueou: libera blocos em voo para outros peers
+                    # Peer nos bloqueou: libera blocos em voo para que outros peers possam baixar
                     for (p_idx, b_begin) in list(in_flight.keys()):
                         self.piece_manager.reset_block(p_idx, b_begin)
                     in_flight.clear()
@@ -326,8 +392,20 @@ class TorrentClient:
 
             return self.piece_manager.is_complete
 
-        except (PeerError, TimeoutError, OSError) as e:
-            logger.debug(f"Falha de comunicação com peer durante download: {e}")
+        except PeerConnectionClosedError as e:
+            logger.debug(f"Peer {conn.peer_host}:{conn.peer_port} desconectou (EOF): {e}")
+            return False
+        except PeerTimeoutError as e:
+            logger.debug(f"Timeout de comunicação com peer {conn.peer_host}:{conn.peer_port}: {e}")
+            return False
+        except (HandshakeError, MessageSizeError, PeerProtocolError) as e:
+            logger.warning(f"Violação de protocolo pelo peer {conn.peer_host}:{conn.peer_port}: {e}")
+            return False
+        except (PeerConnectionError, OSError) as e:
+            logger.debug(f"Erro de conexão com peer {conn.peer_host}:{conn.peer_port}: {e}")
+            return False
+        except (ValueError, IndexError) as e:
+            logger.warning(f"Dados inesperados recebidos do peer {conn.peer_host}:{conn.peer_port}: {e}")
             return False
         finally:
             # Libera qualquer bloco em voo atribuído a este peer
@@ -346,6 +424,7 @@ class TorrentClient:
     ) -> bool:
         """
         Conecta a um peer, realiza o handshake e inicia o download de blocos.
+        Trata especificamente erros de handshake, rede e timeout.
         """
         if self.piece_manager.is_complete:
             return True
@@ -371,8 +450,11 @@ class TorrentClient:
                 max_in_flight=max_in_flight,
             )
 
-        except (PeerError, TimeoutError, OSError) as e:
-            logger.debug(f"Não foi possível baixar do peer {peer.ip}:{peer.port}: {e}")
+        except HandshakeError as e:
+            logger.warning(f"Handshake rejeitado pelo peer {peer.ip}:{peer.port}: {e}")
+            return False
+        except (PeerConnectionError, PeerTimeoutError, OSError) as e:
+            logger.debug(f"Falha de conexão com o peer {peer.ip}:{peer.port}: {e}")
             return False
         finally:
             conn.close()
@@ -400,14 +482,14 @@ class TorrentClient:
         """
         self._stop_requested = False
 
-        # Se já estiver 100% completo, retorna diretamente
+        # Se já estiver 100% completo (ex: por retomada de arquivo existente), retorna diretamente
         if self.piece_manager.is_complete:
             return self._finalize_download()
 
         # Obtém peers caso não tenham sido passados
         available_peers: List[PeerInfo] = list(peers) if peers is not None else self.discover_peers()
         if not available_peers:
-            raise DownloadError("Nenhum peer disponível para realizar o download.")
+            raise NoPeersAvailableError("Nenhum peer disponível no enxame para realizar o download.")
 
         peer_queue: queue.Queue[PeerInfo] = queue.Queue()
         for peer in available_peers:
@@ -493,14 +575,25 @@ class TorrentClient:
                 offset += file_info.length
 
     def stop(self) -> None:
-        """Sinaliza parada para todas as threads de download ativas."""
+        """
+        Sinaliza parada para todas as threads de download ativas e encerra
+        as conexões de peers imediatamente para evitar bloqueios.
+        """
         self._stop_requested = True
+        with self._active_connections_lock:
+            active_conns = list(self._active_connections)
+        for conn in active_conns:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
         try:
             self.tracker_client.stop(
                 uploaded=0,
                 downloaded=self.piece_manager.bytes_downloaded(),
                 left=self.piece_manager.bytes_left(),
-                timeout=self.tracker_timeout,
+                timeout=min(self.tracker_timeout, 3.0),
             )
         except Exception:
             pass
