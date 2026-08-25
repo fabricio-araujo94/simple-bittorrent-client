@@ -19,16 +19,16 @@ Fluxo de Download implementado:
 9. Envio de mensagens `Request` e recepção de mensagens `Piece`;
 10. Armazenamento de blocos, montagem da peça e validação de integridade por hash SHA-1;
 11. Notificação de conclusão de peça e repetição do ciclo até 100% do torrent ser obtido;
-12. Reconstrução ordenada e gravação do arquivo final (single-file ou multi-file).
+12. Reconstrução ordenada e gravação do arquivo.
 """
 
 import logging
+import queue
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Sequence, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from .hash_utils import compute_sha1
 from .peer import (
@@ -80,7 +80,7 @@ class DownloadProgress:
 
 class TorrentClient:
     """
-    Cliente BitTorrent unificado para download de torrents.
+    Cliente BitTorrent unificado para download concorrente de torrents a partir de múltiplos peers.
     """
 
     def __init__(
@@ -91,6 +91,7 @@ class TorrentClient:
         peer_id: Optional[Union[bytes, str]] = None,
         port: int = 6881,
         block_size: int = DEFAULT_BLOCK_SIZE,
+        max_in_flight: int = 4,
         peer_timeout: float = 10.0,
         tracker_timeout: float = 15.0,
         http_opener: Optional[Any] = None,
@@ -109,6 +110,7 @@ class TorrentClient:
         self.output_path = Path(output_path) if output_path else None
         self.port = port
         self.block_size = block_size
+        self.max_in_flight = max(1, max_in_flight)
         self.peer_timeout = peer_timeout
         self.tracker_timeout = tracker_timeout
         self.http_opener = http_opener
@@ -128,14 +130,37 @@ class TorrentClient:
         )
         self.peer_id = self.tracker_client.peer_id
 
-        # Controle de concorrência e parada
+        # Controle de concorrência, conexões ativas e parada
         self._stop_requested = False
         self._lock = threading.RLock()
+        self._active_connections: List[PeerConnection] = []
+        self._active_connections_lock = threading.Lock()
 
     @property
     def is_complete(self) -> bool:
         """Verifica se todas as peças do torrent foram baixadas e validadas."""
         return self.piece_manager.is_complete
+
+    def _register_connection(self, conn: PeerConnection) -> None:
+        """Registra uma conexão de peer ativa."""
+        with self._active_connections_lock:
+            self._active_connections.append(conn)
+
+    def _unregister_connection(self, conn: PeerConnection) -> None:
+        """Desregistra uma conexão de peer."""
+        with self._active_connections_lock:
+            if conn in self._active_connections:
+                self._active_connections.remove(conn)
+
+    def _broadcast_have(self, piece_index: int) -> None:
+        """Envia mensagem Have para todas as conexões de peers ativas."""
+        with self._active_connections_lock:
+            active = list(self._active_connections)
+        for conn in active:
+            try:
+                conn.send_have(piece_index)
+            except Exception:
+                pass
 
     def get_progress(self) -> DownloadProgress:
         """Retorna o progresso atual do download."""
@@ -173,20 +198,25 @@ class TorrentClient:
         conn: PeerConnection,
         on_progress: Optional[Callable[[DownloadProgress], None]] = None,
         max_blocks_per_iteration: int = 1000,
+        max_in_flight: Optional[int] = None,
     ) -> bool:
         """
         Executa o ciclo de download com uma conexão de peer já estabelecida e com handshake realizado.
 
-        Etapas:
-        1. Processa mensagens iniciais do peer (Bitfield/Have);
-        2. Envia 'Interested' se o peer tiver peças necessárias;
-        3. Aguarda 'Unchoke';
-        4. Requisita blocos sequencialmente e armazena respostas 'Piece';
-        5. Valida hashes SHA-1 e atualiza o PieceManager.
+        Recursos:
+        1. Pipelining de requisições (respeita max_in_flight);
+        2. Rastreamento e isolamento de requisições em voo exclusivas desta conexão;
+        3. Recepção assíncrona de blocos e controle de fluxo (Choke/Unchoke/Have/Bitfield);
+        4. Devolução atômica de blocos ao PieceManager em caso de choke ou desconexão;
+        5. Notificação de conclusão de peças (Have) aos outros peers.
 
         Returns:
             bool: True se o download do torrent foi concluído ou progrediu, False se desconectou/falhou.
         """
+        effective_max_in_flight = max_in_flight if max_in_flight is not None else self.max_in_flight
+        self._register_connection(conn)
+        in_flight: Dict[Tuple[int, int], int] = {}  # (piece_idx, begin) -> length
+
         try:
             # 1. Envia 'Interested'
             conn.send_interested()
@@ -196,97 +226,109 @@ class TorrentClient:
 
             while not self.piece_manager.is_complete and not self._stop_requested:
                 iteration += 1
-                if iteration > max_blocks_per_iteration and max_blocks_per_iteration > 0:
+                if 0 < max_blocks_per_iteration < iteration:
                     break
 
-                # Se estiver bloqueado (choked), aguarda desbloqueio
-                if conn.peer_choking:
-                    try:
-                        msg = conn.read_message(timeout=self.peer_timeout)
-                        if isinstance(msg, UnchokeMessage):
-                            conn.peer_choking = False
-                        elif isinstance(msg, HaveMessage):
-                            if conn.peer_bitfield is not None and msg.piece_index < conn.peer_bitfield.num_pieces:
-                                conn.peer_bitfield.set_piece(msg.piece_index, True)
-                        elif isinstance(msg, BitfieldMessage):
-                            conn.peer_bitfield = msg.to_bitfield(self.torrent_meta.num_pieces)
-                        continue
-                    except PeerTimeoutError:
-                        # Timeout aguardando unchoke
-                        break
+                # 1. Se o peer estiver unchoked, envia requisições até atingir o limite em voo (Pipelining)
+                if not conn.peer_choking:
+                    while len(in_flight) < effective_max_in_flight and not self.piece_manager.is_complete and not self._stop_requested:
+                        req = self.piece_manager.get_next_block_to_request(peer_bitfield=conn.peer_bitfield)
+                        if req is None:
+                            break
+                        piece_idx, begin, length = req
+                        try:
+                            conn.send_request(index=piece_idx, begin=begin, length=length)
+                            in_flight[(piece_idx, begin)] = length
+                        except Exception:
+                            self.piece_manager.reset_block(piece_idx, begin)
+                            raise
 
-                # 2. Seleciona o próximo bloco a solicitar
-                req = self.piece_manager.get_next_block_to_request(peer_bitfield=conn.peer_bitfield)
-                if req is None:
-                    # Nenhum bloco pendente que este peer possua no momento
-                    consecutive_no_requests += 1
-                    if consecutive_no_requests >= 3:
-                        break
-                    time.sleep(0.01)
-                    continue
-
-                consecutive_no_requests = 0
-                piece_idx, begin, length = req
-
-                # 3. Envia mensagem Request
-                conn.send_request(index=piece_idx, begin=begin, length=length)
-
-                # 4. Lê mensagens do peer até receber a resposta da Piece
-                block_received = False
-                while not block_received:
+                # 2. Decide como ler do socket com base nas requisições em voo
+                if len(in_flight) == 0:
+                    if conn.peer_choking:
+                        # Bloqueado pelo peer e sem requests pendentes: aguarda mensagem (unchoke/have/bitfield)
+                        try:
+                            msg = conn.read_message(timeout=self.peer_timeout)
+                        except PeerTimeoutError:
+                            # Timeout aguardando unchoke
+                            break
+                    else:
+                        # Unchoked, mas nenhum bloco pôde ser solicitado no momento (ex: peças já em voo em outros peers)
+                        consecutive_no_requests += 1
+                        if consecutive_no_requests >= 50:
+                            break
+                        try:
+                            msg = conn.read_message(timeout=min(self.peer_timeout, 0.5))
+                        except PeerTimeoutError:
+                            time.sleep(0.02)
+                            continue
+                else:
+                    # Há requisições em voo: aguarda a resposta do peer
+                    consecutive_no_requests = 0
                     msg = conn.read_message(timeout=self.peer_timeout)
 
-                    if isinstance(msg, PieceMessage):
-                        if msg.index == piece_idx and msg.begin == begin:
-                            # 5. Adiciona o bloco e valida integridade no PieceManager
-                            added, completed = self.piece_manager.add_block(
-                                piece_index=msg.index,
-                                begin=msg.begin,
-                                data=msg.block,
-                            )
-                            block_received = True
+                # 3. Processa a mensagem recebida
+                if isinstance(msg, PieceMessage):
+                    in_flight.pop((msg.index, msg.begin), None)
 
-                            if completed:
-                                # Peça validada com sucesso via SHA-1!
-                                try:
-                                    conn.send_have(msg.index)
-                                except Exception:
-                                    pass
+                    added, completed = self.piece_manager.add_block(
+                        piece_index=msg.index,
+                        begin=msg.begin,
+                        data=msg.block,
+                    )
 
-                            if on_progress is not None:
-                                on_progress(self.get_progress())
+                    if completed:
+                        # Peça validada com sucesso via SHA-1: notifica outros peers
+                        self._broadcast_have(msg.index)
 
-                        else:
-                            # Bloco recebido para outro offset ou peça
-                            self.piece_manager.add_block(msg.index, msg.begin, msg.block)
+                    if on_progress is not None:
+                        on_progress(self.get_progress())
 
-                    elif isinstance(msg, ChokeMessage):
-                        # Peer nos bloqueou novamente
-                        conn.peer_choking = True
-                        self.piece_manager.reset_pending_requests(piece_index=piece_idx)
+                    if self.piece_manager.is_complete:
                         break
 
-                    elif isinstance(msg, HaveMessage):
-                        if conn.peer_bitfield is not None and msg.piece_index < conn.peer_bitfield.num_pieces:
-                            conn.peer_bitfield.set_piece(msg.piece_index, True)
+                elif isinstance(msg, ChokeMessage):
+                    conn.peer_choking = True
+                    # Peer nos bloqueou: libera blocos em voo para outros peers
+                    for (p_idx, b_begin) in list(in_flight.keys()):
+                        self.piece_manager.reset_block(p_idx, b_begin)
+                    in_flight.clear()
 
-                    elif isinstance(msg, BitfieldMessage):
-                        conn.peer_bitfield = msg.to_bitfield(self.torrent_meta.num_pieces)
+                elif isinstance(msg, UnchokeMessage):
+                    conn.peer_choking = False
+                    consecutive_no_requests = 0
 
-                    elif isinstance(msg, KeepAliveMessage):
-                        pass
+                elif isinstance(msg, HaveMessage):
+                    if conn.peer_bitfield is None:
+                        conn.peer_bitfield = Bitfield(num_pieces=self.torrent_meta.num_pieces)
+                    if msg.piece_index < conn.peer_bitfield.num_pieces:
+                        conn.peer_bitfield.set_piece(msg.piece_index, True)
+                    consecutive_no_requests = 0
+
+                elif isinstance(msg, BitfieldMessage):
+                    conn.peer_bitfield = msg.to_bitfield(self.torrent_meta.num_pieces)
+                    consecutive_no_requests = 0
+
+                elif isinstance(msg, KeepAliveMessage):
+                    pass
 
             return self.piece_manager.is_complete
 
         except (PeerError, TimeoutError, OSError) as e:
             logger.debug(f"Falha de comunicação com peer durante download: {e}")
-            self.piece_manager.reset_pending_requests()
             return False
+        finally:
+            # Libera qualquer bloco em voo atribuído a este peer
+            for (p_idx, b_begin) in list(in_flight.keys()):
+                self.piece_manager.reset_block(p_idx, b_begin)
+            in_flight.clear()
+            self._unregister_connection(conn)
 
     def download_from_peer(
         self,
         peer: PeerInfo,
         on_progress: Optional[Callable[[DownloadProgress], None]] = None,
+        max_in_flight: Optional[int] = None,
     ) -> bool:
         """
         Conecta a um peer, realiza o handshake e inicia o download de blocos.
@@ -309,7 +351,11 @@ class TorrentClient:
             )
 
             # Executa o ciclo de requisição e download
-            return self.download_from_peer_connection(conn, on_progress=on_progress)
+            return self.download_from_peer_connection(
+                conn,
+                on_progress=on_progress,
+                max_in_flight=max_in_flight,
+            )
 
         except (PeerError, TimeoutError, OSError) as e:
             logger.debug(f"Não foi possível baixar do peer {peer.ip}:{peer.port}: {e}")
@@ -321,16 +367,19 @@ class TorrentClient:
         self,
         peers: Optional[Sequence[PeerInfo]] = None,
         max_workers: int = 4,
+        max_in_flight: Optional[int] = None,
         on_progress: Optional[Callable[[DownloadProgress], None]] = None,
     ) -> bytes:
         """
-        Executa o fluxo completo de download do torrent.
+        Executa o fluxo completo de download concorrente do torrent a partir de múltiplos peers.
 
-        1. Obtém a lista de peers (do tracker ou fornecida);
-        2. Conecta e baixa blocos dos peers até atingir 100%;
-        3. Valida a integridade total do arquivo;
-        4. Grava em disco se `output_path` tiver sido configurado;
-        5. Notifica o tracker sobre a conclusão (`completed`).
+        Estratégia de Concorrência: Threading (Worker Threads por Peer)
+        - Mantém múltiplas conexões simultâneas com peers;
+        - Cada conexão opera em sua própria thread com socket TCP dedicado;
+        - Distribuição coordenada e atômica de blocos via PieceManager (thread-safe);
+        - Pipelining de requisições por peer para alta performance sem sobrecarga;
+        - Isolamento estrito de falhas: desconexão de um peer re-enfileira apenas seus próprios
+          blocos em voo e a thread tenta o próximo peer disponível.
 
         Returns:
             bytes: Dados completos e ordenados do torrent reconstruído.
@@ -346,23 +395,34 @@ class TorrentClient:
         if not available_peers:
             raise DownloadError("Nenhum peer disponível para realizar o download.")
 
-        # Tenta baixar utilizando os peers disponíveis
-        if max_workers <= 1 or len(available_peers) == 1:
-            for peer in available_peers:
-                if self.piece_manager.is_complete or self._stop_requested:
+        peer_queue: queue.Queue[PeerInfo] = queue.Queue()
+        for peer in available_peers:
+            peer_queue.put(peer)
+
+        def worker_loop():
+            while not self.piece_manager.is_complete and not self._stop_requested:
+                try:
+                    peer = peer_queue.get_nowait()
+                except queue.Empty:
                     break
-                self.download_from_peer(peer, on_progress=on_progress)
-        else:
-            with ThreadPoolExecutor(max_workers=min(max_workers, len(available_peers))) as executor:
-                futures = [
-                    executor.submit(self.download_from_peer, peer, on_progress)
-                    for peer in available_peers
-                ]
-                for fut in futures:
-                    try:
-                        fut.result()
-                    except Exception as e:
-                        logger.debug(f"Erro em thread de peer: {e}")
+                try:
+                    self.download_from_peer(
+                        peer,
+                        on_progress=on_progress,
+                        max_in_flight=max_in_flight,
+                    )
+                except Exception as e:
+                    logger.debug(f"Erro em worker de peer ({peer.ip}:{peer.port}): {e}")
+
+        num_workers = min(max(1, max_workers), len(available_peers))
+        threads: List[threading.Thread] = []
+        for i in range(num_workers):
+            t = threading.Thread(target=worker_loop, name=f"PeerWorker-{i}", daemon=True)
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
 
         if not self.piece_manager.is_complete:
             raise DownloadIncompleteError(
