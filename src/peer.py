@@ -769,6 +769,10 @@ class PeerConnection:
         """Fecha o socket e limpa o buffer interno."""
         if self._sock is not None:
             try:
+                self._sock.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            try:
                 self._sock.close()
             except Exception:
                 pass
@@ -839,7 +843,10 @@ class PeerConnection:
 
         finally:
             if self._sock is not None:
-                self._sock.settimeout(old_timeout)
+                try:
+                    self._sock.settimeout(old_timeout)
+                except Exception:
+                    pass
 
     def send_exact(self, data: Union[bytes, bytearray, memoryview]) -> None:
         """
