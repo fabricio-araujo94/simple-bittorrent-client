@@ -13,6 +13,12 @@ from .bencode import (
     encode_bencode,
     extract_info_bytes,
 )
+from .client import (
+    DownloadError,
+    DownloadIncompleteError,
+    DownloadProgress,
+    TorrentClient,
+)
 from .hash_utils import compute_sha1, verify_sha1
 from .peer import (
     DEFAULT_BLOCK_SIZE,
@@ -61,6 +67,13 @@ from .peer import (
     parse_message,
     parse_message_payload,
     parse_messages_from_buffer,
+)
+from .piece_manager import (
+    Block,
+    BlockState,
+    Piece,
+    PieceManager,
+    PieceState,
 )
 from .torrent import (
     FileInfo,
@@ -178,4 +191,15 @@ __all__ = [
     "parse_message",
     "parse_messages_from_buffer",
     "PeerConnection",
+    # Piece Manager
+    "BlockState",
+    "PieceState",
+    "Block",
+    "Piece",
+    "PieceManager",
+    # Client / Downloader
+    "TorrentClient",
+    "DownloadError",
+    "DownloadIncompleteError",
+    "DownloadProgress",
 ]
