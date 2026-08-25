@@ -367,6 +367,41 @@ class TestPieceManager(unittest.TestCase):
         self.assertEqual(self.pm.completed_pieces_count(), 3)
         self.assertEqual(self.pm.get_all_data(), self.full_torrent_data)
 
+    def test_granular_reset_block_and_reset_blocks(self):
+        """Testa reset atômico de blocos individuais e múltiplos blocos."""
+        # 1. Solicita blocos da peça 0: (0, 0), (0, 8192), (0, 16384)
+        r0 = self.pm.get_next_block_to_request()
+        r1 = self.pm.get_next_block_to_request()
+        r2 = self.pm.get_next_block_to_request()
+
+        self.assertEqual(r0, (0, 0, 8192))
+        self.assertEqual(r1, (0, 8192, 8192))
+        self.assertEqual(r2, (0, 16384, 3616))
+
+        # Peça 0 agora não tem mais blocos MISSING
+        r_p1 = self.pm.get_next_block_to_request()
+        self.assertEqual(r_p1, (1, 0, 8192))
+
+        # 2. Reseta apenas o bloco (0, 8192)
+        res = self.pm.reset_block(0, 8192)
+        self.assertTrue(res)
+
+        # O próximo bloco requisitado deve ser o bloco (0, 8192) re-disponibilizado!
+        r_retried = self.pm.get_next_block_to_request()
+        self.assertEqual(r_retried, (0, 8192, 8192))
+
+        # 3. Reseta múltiplos blocos via reset_blocks
+        self.pm.reset_blocks([(0, 0), (0, 16384)])
+        # Deve re-oferecer (0, 0)
+        r_re0 = self.pm.get_next_block_to_request()
+        self.assertEqual(r_re0, (0, 0, 8192))
+
+    def test_reset_block_invalid_index(self):
+        """Testa reset_block com índices fora de alcance."""
+        self.assertFalse(self.pm.reset_block(-1, 0))
+        self.assertFalse(self.pm.reset_block(999, 0))
+        self.assertFalse(self.pm.reset_block(0, 999999))
+
 
 if __name__ == "__main__":
     unittest.main()

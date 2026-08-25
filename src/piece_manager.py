@@ -244,18 +244,39 @@ class Piece:
                     return b
             return None
 
+    def reset_block(self, begin: int) -> bool:
+        """
+        Reseta um bloco específico do estado REQUESTED de volta para MISSING.
+        Retorna True se o bloco foi resetado, False caso contrário.
+        """
+        with self._lock:
+            if self.state == PieceState.COMPLETED:
+                return False
+
+            for b in self.blocks:
+                if b.begin == begin:
+                    if b.state == BlockState.REQUESTED:
+                        b.state = BlockState.MISSING
+                        has_received = any(blk.state == BlockState.RECEIVED for blk in self.blocks)
+                        has_requested = any(blk.state == BlockState.REQUESTED for blk in self.blocks)
+                        if has_received or has_requested:
+                            self.state = PieceState.DOWNLOADING
+                        else:
+                            self.state = PieceState.MISSING
+                        return True
+                    return False
+            return False
+
     def reset_pending_blocks(self) -> None:
         """Reseta blocos marcados como REQUESTED de volta para MISSING."""
         with self._lock:
             if self.state == PieceState.COMPLETED:
                 return
-            has_received = False
             for b in self.blocks:
                 if b.state == BlockState.REQUESTED:
                     b.state = BlockState.MISSING
-                elif b.state == BlockState.RECEIVED:
-                    has_received = True
 
+            has_received = any(b.state == BlockState.RECEIVED for b in self.blocks)
             self.state = PieceState.DOWNLOADING if has_received else PieceState.MISSING
 
     def reset(self) -> None:
@@ -470,6 +491,24 @@ class PieceManager:
                         return piece.index, block.begin, block.length
 
             return None
+
+    def reset_block(self, piece_index: int, begin: int) -> bool:
+        """
+        Reseta um bloco específico de uma peça do estado REQUESTED de volta para MISSING.
+        """
+        with self._lock:
+            if 0 <= piece_index < self.num_pieces:
+                return self.get_piece(piece_index).reset_block(begin)
+            return False
+
+    def reset_blocks(self, blocks: Sequence[Tuple[int, int]]) -> None:
+        """
+        Reseta múltiplos blocos (piece_index, begin) de volta para MISSING.
+        """
+        with self._lock:
+            for piece_idx, begin in blocks:
+                if 0 <= piece_idx < self.num_pieces:
+                    self.get_piece(piece_idx).reset_block(begin)
 
     def reset_pending_requests(self, piece_index: Optional[int] = None) -> None:
         """
