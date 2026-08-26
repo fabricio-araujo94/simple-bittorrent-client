@@ -34,15 +34,21 @@ class BencodeEncodeError(BencodeError):
     pass
 
 
+MAX_BENCODE_DEPTH = 100
+MAX_INT_DIGITS = 64
+MAX_BENCODE_STRING_LENGTH = 100 * 1024 * 1024  # 100 MB
+
+
 class BencodeDecoder:
     """
-    Decodificador Bencode com validação estrita da especificação BEP 0003
-    e rastreamento de offsets de bytes brutos para cálculo de hashes.
+    Decodificador Bencode com validação estrita da especificação BEP 0003,
+    proteção contra ataques de profundidade/memória (DoS) e rastreamento de offsets.
     """
 
-    def __init__(self, data: bytes):
+    def __init__(self, data: bytes, max_depth: int = MAX_BENCODE_DEPTH):
         self._data = data
         self._len = len(data)
+        self.max_depth = max_depth
         # Mapeia chaves do dicionário raiz para seus offsets brutos (start, end)
         self.raw_slices: Dict[bytes, Tuple[int, int]] = {}
         # Mapeia caminhos de chaves (tuplas) para offsets brutos (start, end)
@@ -61,6 +67,11 @@ class BencodeDecoder:
     def _parse_at(
         self, idx: int, depth: int = 0, current_path: Tuple[bytes, ...] = ()
     ) -> Tuple[Any, int]:
+        if depth > self.max_depth:
+            raise BencodeDecodeError(
+                f"Profundidade máxima de aninhamento ({self.max_depth}) excedida no Bencode (potencial ataque DoS)."
+            )
+
         if idx >= self._len:
             raise BencodeTruncatedError(f"Fim de buffer inesperado no offset {idx}.")
 
@@ -89,6 +100,11 @@ class BencodeDecoder:
         int_bytes = self._data[idx + 1 : end_idx]
         if not int_bytes:
             raise BencodeDecodeError(f"Inteiro Bencode vazio no offset {idx}.")
+
+        if len(int_bytes) > MAX_INT_DIGITS:
+            raise BencodeDecodeError(
+                f"Tamanho de inteiro Bencode ({len(int_bytes)} dígitos) excede o limite seguro de {MAX_INT_DIGITS} dígitos."
+            )
 
         # Validações estritas de conformidade com BEP 0003:
         # 1. Não pode ter sinal '+'
@@ -162,6 +178,11 @@ class BencodeDecoder:
             length = int(length_bytes.decode('ascii'))
         except ValueError:
             raise BencodeDecodeError(f"Tamanho de string inválido {length_bytes!r} no offset {idx}.")
+
+        if length > MAX_BENCODE_STRING_LENGTH:
+            raise BencodeDecodeError(
+                f"Tamanho de string Bencode ({length} bytes) excede o limite máximo permitido ({MAX_BENCODE_STRING_LENGTH} bytes)."
+            )
 
         start_str = colon_idx + 1
         end_str = start_str + length
