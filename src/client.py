@@ -554,21 +554,35 @@ class TorrentClient:
     def save_files(self, target_destination: Union[str, Path]) -> None:
         """
         Grava os arquivos baixados respeitando a estrutura single-file ou multi-file.
+        Garante isolamento estrito contra Path Traversal e gravações arbitrárias no disco.
         """
         all_data = self.piece_manager.get_all_data()
-        dest = Path(target_destination)
+        dest = Path(target_destination).resolve()
 
         if not self.torrent_meta.is_multi_file:
             # Single-file
-            target_file = dest if not dest.is_dir() else dest / self.torrent_meta.name
+            if dest.is_dir():
+                target_file = (dest / self.torrent_meta.name).resolve()
+                try:
+                    target_file.relative_to(dest)
+                except ValueError:
+                    raise DownloadError(f"Tentativa de Path Traversal ao salvar arquivo: {target_file}")
+            else:
+                target_file = dest
+
             target_file.parent.mkdir(parents=True, exist_ok=True)
             target_file.write_bytes(all_data)
         else:
             # Multi-file
-            base_dir = dest / self.torrent_meta.name if not dest.name == self.torrent_meta.name else dest
+            base_dir = (dest / self.torrent_meta.name).resolve() if not dest.name == self.torrent_meta.name else dest
             offset = 0
             for file_info in self.torrent_meta.files:
-                file_path = base_dir.joinpath(*file_info.path)
+                file_path = base_dir.joinpath(*file_info.path).resolve()
+                try:
+                    file_path.relative_to(base_dir)
+                except ValueError:
+                    raise DownloadError(f"Tentativa de Path Traversal ao salvar arquivo: {file_path}")
+
                 file_path.parent.mkdir(parents=True, exist_ok=True)
                 file_data = all_data[offset : offset + file_info.length]
                 file_path.write_bytes(file_data)
