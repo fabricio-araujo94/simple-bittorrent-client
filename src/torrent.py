@@ -30,6 +30,41 @@ class TorrentValidationError(TorrentParseError):
     pass
 
 
+class TorrentSecurityError(TorrentValidationError):
+    """Exceção lançada quando detectada tentativa de violação de segurança (ex: Path Traversal)."""
+    pass
+
+
+def validate_safe_path_segment(segment: str) -> str:
+    """
+    Valida e sanitiza um segmento de caminho para impedir vulnerabilidades de Path Traversal.
+
+    Rejeita:
+    - Segmentos vazios, '.', '..';
+    - Segmentos contendo '/', '\\', '\x00' (null bytes) ou ':' (unidades Windows).
+    """
+    if not isinstance(segment, str):
+        raise TorrentValidationError(f"Segmento de caminho deve ser string, obtido {type(segment).__name__}.")
+
+    seg = segment.strip()
+    if not seg:
+        raise TorrentValidationError("Segmento de caminho não pode ser vazio ou conter apenas espaços.")
+
+    if seg in (".", "..") or ".." in seg:
+        raise TorrentSecurityError(f"Tentativa de Path Traversal detectada no segmento de caminho: {segment!r}")
+
+    if "\x00" in seg:
+        raise TorrentSecurityError(f"Null byte detectado no segmento de caminho: {segment!r}")
+
+    if "/" in seg or "\\" in seg:
+        raise TorrentSecurityError(f"Separadores de diretório não permitidos dentro de segmento individual: {segment!r}")
+
+    if ":" in seg:
+        raise TorrentSecurityError(f"Caractere ':' não permitido no segmento de caminho: {segment!r}")
+
+    return seg
+
+
 @dataclass(frozen=True)
 class FileInfo:
     """
@@ -112,7 +147,7 @@ def load_torrent_bytes(raw_bytes: Union[bytes, bytearray, memoryview]) -> Torren
     """
     Decodifica o buffer de bytes de um arquivo .torrent, valida todos os campos
     obrigatórios, extrai announce / announce-list, divide pieces em hashes SHA-1,
-    calcula o info_hash e constrói o TorrentMetadata.
+    calcula o info_hash e constrói o TorrentMetadata com proteção de segurança.
     """
     if not isinstance(raw_bytes, (bytes, bytearray, memoryview)):
         raise TorrentParseError(
@@ -196,15 +231,13 @@ def load_torrent_bytes(raw_bytes: Union[bytes, bytearray, memoryview]) -> Torren
                 trackers_set.add(tr)
                 all_trackers.append(tr)
 
-    # 4. Extração e validação do nome ('name')
+    # 4. Extração e validação do nome ('name') com proteção de Path Traversal
     if b"name" not in info:
         raise TorrentValidationError("Campo obrigatório 'name' não encontrado na seção 'info'.")
     name_raw = info[b"name"]
     if not isinstance(name_raw, bytes):
         raise TorrentValidationError("Campo 'name' na seção 'info' deve ser uma byte string.")
-    name = name_raw.decode('utf-8', errors='replace').strip()
-    if not name:
-        raise TorrentValidationError("Campo 'name' na seção 'info' não pode ser vazio.")
+    name = validate_safe_path_segment(name_raw.decode('utf-8', errors='replace'))
 
     # 5. Extração e validação de 'piece length'
     if b"piece length" not in info:
@@ -274,11 +307,7 @@ def load_torrent_bytes(raw_bytes: Union[bytes, bytearray, memoryview]) -> Torren
                     raise TorrentValidationError(
                         f"Segmento de caminho {seg_idx} no arquivo {f_idx} deve ser byte string."
                     )
-                seg_str = seg.decode('utf-8', errors='replace')
-                if not seg_str:
-                    raise TorrentValidationError(
-                        f"Segmento de caminho {seg_idx} no arquivo {f_idx} não pode ser vazio."
-                    )
+                seg_str = validate_safe_path_segment(seg.decode('utf-8', errors='replace'))
                 path_segments.append(seg_str)
 
             f_md5 = None
