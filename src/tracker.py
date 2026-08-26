@@ -247,8 +247,16 @@ def build_announce_url(
         if trackerid_str:
             query_params.append(f"trackerid={urllib.parse.quote(trackerid_str, safe='')}")
 
-    query_string = "&".join(query_params)
     clean_base = base_url.strip()
+    parsed_base = urllib.parse.urlparse(clean_base)
+    if parsed_base.scheme.lower() not in ("http", "https"):
+        raise TrackerError(
+            f"Esquema de URL do tracker não suportado ou inseguro: {parsed_base.scheme!r} (apenas http e https são permitidos)."
+        )
+    if not parsed_base.netloc:
+        raise TrackerError(f"URL de tracker inválida (hostname ausente): {clean_base!r}.")
+
+    query_string = "&".join(query_params)
 
     if "?" in clean_base:
         if clean_base.endswith("?") or clean_base.endswith("&"):
@@ -461,6 +469,12 @@ def execute_http_get(
     Permite injeção de `opener` customizado (função ou urllib OpenerDirector) para testes
     unitários sem necessidade de conexão com a Internet real.
     """
+    parsed_url = urllib.parse.urlparse(url)
+    if parsed_url.scheme.lower() not in ("http", "https"):
+        raise TrackerError(
+            f"Esquema de URL inseguro ou não suportado: {parsed_url.scheme!r} (apenas http e https são permitidos)."
+        )
+
     req = urllib.request.Request(
         url,
         headers={
