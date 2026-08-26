@@ -42,8 +42,14 @@ HANDSHAKE_LENGTH = 68  # 1 byte pstrlen + 19 bytes pstr + 8 bytes reserved + 20 
 # Tamanho padrão do bloco requisitado (16 KB)
 DEFAULT_BLOCK_SIZE = 16384
 
+# Limite máximo seguro para tamanho de bloco individual (128 KB)
+MAX_BLOCK_SIZE = 128 * 1024
+
 # Limite de segurança para tamanho de mensagens individuais (2 MB) para evitar estouro de memória
 MAX_MESSAGE_LENGTH = 2 * 1024 * 1024
+
+# Limite máximo para o buffer de recepção interno de um peer (4 MB) contra ataques de exaustão de memória
+MAX_PEER_BUFFER_SIZE = 4 * 1024 * 1024
 
 
 class MessageID(IntEnum):
@@ -240,6 +246,14 @@ class Bitfield:
                     f"Tamanho do bitfield ({len(raw)} bytes) incompatível com "
                     f"num_pieces={num_pieces} (esperado {expected_len} bytes)."
                 )
+            # Validação estrita de bits sobressalentes (BEP 0003)
+            spare_bits = (expected_len * 8) - num_pieces
+            if spare_bits > 0 and len(raw) > 0:
+                mask = (1 << spare_bits) - 1
+                if raw[-1] & mask != 0:
+                    raise PeerProtocolError(
+                        f"Bitfield inválido: bits sobressalentes não-nulos detectados no final do bitfield (spare_bits={spare_bits})."
+                    )
             self._data = bytearray(raw)
         else:
             self._data = bytearray(expected_len)
@@ -608,6 +622,10 @@ def parse_message_payload(length: int, payload: bytes) -> PeerMessage:
         if length != 13 or len(data) != 12:
             raise MessageSizeError(f"Mensagem Request deve ter length=13 (12 bytes de payload), obtido {length}.")
         index, begin, block_length = struct.unpack("!III", data)
+        if block_length > MAX_BLOCK_SIZE:
+            raise MessageSizeError(
+                f"Tamanho do bloco solicitado ({block_length} bytes) excede o limite máximo ({MAX_BLOCK_SIZE} bytes)."
+            )
         return RequestMessage(index=index, begin=begin, length=block_length)
 
     elif msg_id == MessageID.PIECE:
@@ -615,12 +633,20 @@ def parse_message_payload(length: int, payload: bytes) -> PeerMessage:
             raise MessageSizeError(f"Mensagem Piece deve ter length >= 9, obtido {length}.")
         index, begin = struct.unpack("!II", data[:8])
         block = data[8:]
+        if len(block) > MAX_BLOCK_SIZE:
+            raise MessageSizeError(
+                f"Tamanho do bloco recebido ({len(block)} bytes) excede o limite máximo ({MAX_BLOCK_SIZE} bytes)."
+            )
         return PieceMessage(index=index, begin=begin, block=block)
 
     elif msg_id == MessageID.CANCEL:
         if length != 13 or len(data) != 12:
             raise MessageSizeError(f"Mensagem Cancel deve ter length=13 (12 bytes de payload), obtido {length}.")
         index, begin, block_length = struct.unpack("!III", data)
+        if block_length > MAX_BLOCK_SIZE:
+            raise MessageSizeError(
+                f"Tamanho do bloco no Cancel ({block_length} bytes) excede o limite máximo ({MAX_BLOCK_SIZE} bytes)."
+            )
         return CancelMessage(index=index, begin=begin, length=block_length)
 
     elif msg_id == MessageID.PORT:
@@ -836,6 +862,10 @@ class PeerConnection:
                     )
 
                 self._buffer.extend(data)
+                if len(self._buffer) > MAX_PEER_BUFFER_SIZE:
+                    raise MessageSizeError(
+                        f"Buffer de recepção do peer ({self.peer_host}:{self.peer_port}) excedeu o limite máximo seguro ({MAX_PEER_BUFFER_SIZE} bytes)."
+                    )
 
             chunk = bytes(self._buffer[:n])
             del self._buffer[:n]
