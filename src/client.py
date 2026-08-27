@@ -176,7 +176,7 @@ class TorrentClient:
         for conn in active:
             try:
                 conn.send_have(piece_index)
-            except Exception:
+            except (PeerConnectionError, OSError):
                 pass
 
     def check_existing_files(self, target_destination: Optional[Union[str, Path]] = None) -> int:
