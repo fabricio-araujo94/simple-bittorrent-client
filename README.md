@@ -13,8 +13,6 @@ O projeto foi desenhado com forte separação de responsabilidades, alta testabi
 - [Estrutura do Projeto e Arquitetura](#estrutura-do-projeto-e-arquitetura)
 - [Instalação](#instalação)
 - [Como Executar](#como-executar)
-	- [1. Modo Linha de Comando (CLI)](#1-modo-linha-de-comando-cli)
-	- [2. Uso Programático em Python (API)](#2-uso-programático-em-python-api)
 - [Opções de Configuração](#opções-de-configuração)
 - [Executando a Suíte de Testes](#executando-a-suíte-de-testes)
 - [Limitações Conhecidas e Fora de Escopo](#limitações-conhecidas-e-fora-de-escopo)
