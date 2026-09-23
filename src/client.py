@@ -183,6 +183,8 @@ class TorrentClient:
         """
         Verifica se já existem arquivos parciais no disco e valida cada peça por SHA-1.
         Peças válidas são marcadas como completadas e aproveitadas no download.
+        Lê as peças diretamente sob demanda peça a peça a partir dos arquivos em disco,
+        mantendo consumo de memória O(piece_length) e evitando MemoryError em torrents grandes.
         """
         dest = Path(target_destination) if target_destination is not None else self.output_path
         if dest is None:
@@ -195,17 +197,62 @@ class TorrentClient:
             base_dir = dest / self.torrent_meta.name if not dest.name == self.torrent_meta.name else dest
             if not base_dir.is_dir():
                 return 0
+
+            # Mapeia cada arquivo aos seus limites globais [start_offset, end_offset)
+            file_spans = []
+            cur_offset = 0
+            for file_info in self.torrent_meta.files:
+                file_path = base_dir.joinpath(*file_info.path)
+                file_spans.append((cur_offset, cur_offset + file_info.length, file_path, file_info.length))
+                cur_offset += file_info.length
+
+            valid_count = 0
+            opened_files = {}
             try:
-                collected = bytearray()
-                for file_info in self.torrent_meta.files:
-                    file_path = base_dir.joinpath(*file_info.path)
-                    if file_path.is_file():
-                        collected.extend(file_path.read_bytes())
-                    else:
-                        collected.extend(b"\x00" * file_info.length)
-                return self.piece_manager.check_existing_data(collected)
+                piece_offset = 0
+                for piece_index in range(self.torrent_meta.num_pieces):
+                    piece_len = self.torrent_meta.get_piece_length(piece_index)
+                    piece_end = piece_offset + piece_len
+                    piece_buf = bytearray(piece_len)
+
+                    for f_start, f_end, f_path, f_len in file_spans:
+                        if f_end <= piece_offset or f_start >= piece_end:
+                            continue
+
+                        # Intervalo de sobreposição nos offsets globais do torrent
+                        overlap_start = max(piece_offset, f_start)
+                        overlap_end = min(piece_end, f_end)
+                        read_len = overlap_end - overlap_start
+
+                        file_seek_pos = overlap_start - f_start
+                        piece_buf_pos = overlap_start - piece_offset
+
+                        if f_path.is_file():
+                            if f_path not in opened_files:
+                                opened_files[f_path] = open(f_path, "rb")
+                            f = opened_files[f_path]
+                            f.seek(file_seek_pos)
+                            chunk = f.read(read_len)
+                            piece_buf[piece_buf_pos : piece_buf_pos + len(chunk)] = chunk
+                            # Se o arquivo for menor que o esperado, o restante permanece 0x00
+                        else:
+                            # Arquivo não existe no disco, permanece 0x00
+                            pass
+
+                    if self.piece_manager.verify_piece(piece_index, bytes(piece_buf)):
+                        valid_count += 1
+
+                    piece_offset += piece_len
             except OSError:
-                return 0
+                pass
+            finally:
+                for f in opened_files.values():
+                    try:
+                        f.close()
+                    except OSError:
+                        pass
+
+            return valid_count
 
     def get_progress(self) -> DownloadProgress:
         """Retorna o progresso atual do download."""

@@ -677,14 +677,24 @@ class PieceManager:
     def check_existing_file(self, target_path: Union[str, Path]) -> int:
         """
         Lê um arquivo existente no disco e valida cada uma das suas peças por SHA-1.
+        Lê as peças sob demanda peça a peça sem carregar a totalidade do arquivo em memória.
         Peças válidas são marcadas como completadas e não serão re-baixadas.
         """
         path = Path(target_path)
         if not path.is_file():
             return 0
+        valid_count = 0
         try:
-            file_data = path.read_bytes()
-            return self.check_existing_data(file_data)
+            with open(path, "rb") as f:
+                with self._lock:
+                    for i, piece in enumerate(self.pieces):
+                        piece_data = f.read(piece.length)
+                        if len(piece_data) == piece.length:
+                            if self.verify_piece(i, piece_data):
+                                valid_count += 1
+                        else:
+                            break
+            return valid_count
         except OSError:
             return 0
 

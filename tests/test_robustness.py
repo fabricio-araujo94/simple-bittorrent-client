@@ -429,6 +429,77 @@ class TestRobustnessEdgeCases(unittest.TestCase):
             self.assertTrue(client.is_complete)
             self.assertEqual(client.piece_manager.get_all_data(), self.raw_data)
 
+    def test_resume_partially_downloaded_multi_file(self):
+        """
+        Testa a recuperação e retomada de torrent multi-file parcialmente baixado:
+        - Estrutura com múltiplos arquivos e diretórios;
+        - Peça 0 abrange f1 e parte de f2;
+        - Valida que a checagem peça por peça identifica corretamente arquivos parciais/existentes.
+        """
+        f1_data = b"F1_DATA_TEST_12345"  # 18 bytes
+        f2_data = b"F2_DATA_TEST_XYZ_67890"  # 22 bytes
+        f3_data = b"F3_DATA_FINAL_DATA_ABCDEF1"  # 26 bytes
+        total_data = f1_data + f2_data + f3_data  # 66 bytes
+        piece_len = 22  # 3 peças (22, 22, 22)
+
+        p0_hash = compute_sha1(total_data[:22])
+        p1_hash = compute_sha1(total_data[22:44])
+        p2_hash = compute_sha1(total_data[44:66])
+
+        multi_info = {
+            b"name": b"dataset_resume",
+            b"piece length": piece_len,
+            b"pieces": p0_hash + p1_hash + p2_hash,
+            b"files": [
+                {b"length": 18, b"path": [b"docs", b"f1.txt"]},
+                {b"length": 22, b"path": [b"docs", b"f2.txt"]},
+                {b"length": 26, b"path": [b"f3.bin"]},
+            ],
+        }
+        multi_meta = load_torrent_bytes(encode_bencode({
+            b"announce": b"http://tracker.local:8080/announce",
+            b"info": multi_info,
+        }))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_root = Path(tmpdir) / "downloads"
+            base_dir = out_root / "dataset_resume"
+            (base_dir / "docs").mkdir(parents=True, exist_ok=True)
+
+            # Grava f1 e f2 completos (peça 0 abrange bytes 0..21 = f1(18) + 4 bytes de f2) -> Peça 0 válida!
+            # Peça 1 abrange bytes 22..43 = f2 restantes (18 bytes) + 4 bytes de f3.
+            # Não gravamos f3 ainda -> Peça 1 e 2 incompletas.
+            (base_dir / "docs" / "f1.txt").write_bytes(f1_data)
+            (base_dir / "docs" / "f2.txt").write_bytes(f2_data)
+
+            client = TorrentClient(
+                multi_meta,
+                output_path=out_root,
+                block_size=8,
+                auto_resume=True,
+            )
+
+            # Peça 0 deve ter sido validada com sucesso
+            self.assertTrue(client.piece_manager.is_piece_complete(0))
+            self.assertFalse(client.piece_manager.is_piece_complete(1))
+            self.assertFalse(client.piece_manager.is_piece_complete(2))
+            self.assertEqual(client.piece_manager.completed_pieces_count(), 1)
+
+            # Agora gravamos f3 completo
+            (base_dir / "f3.bin").write_bytes(f3_data)
+
+            # Criamos novo client com auto-resume para re-verificar tudo
+            client2 = TorrentClient(
+                multi_meta,
+                output_path=out_root,
+                block_size=8,
+                auto_resume=True,
+            )
+            self.assertTrue(client2.piece_manager.is_piece_complete(0))
+            self.assertTrue(client2.piece_manager.is_piece_complete(1))
+            self.assertTrue(client2.piece_manager.is_piece_complete(2))
+            self.assertTrue(client2.is_complete)
+
     # ==========================================================================
     # 8. Parada Graciosa e Interrupção Instantânea de Threads
     # ==========================================================================
