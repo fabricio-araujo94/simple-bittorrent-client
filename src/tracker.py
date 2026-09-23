@@ -484,6 +484,7 @@ def execute_http_get(
         },
     )
 
+    resp = None
     try:
         if opener is not None:
             if hasattr(opener, "open"):
@@ -516,6 +517,7 @@ def execute_http_get(
         return raw_bytes
 
     except urllib.error.HTTPError as e:
+        resp = e
         # Se o servidor HTTP retornar corpo com 'failure reason' Bencoded (ex: 400 ou 403)
         body = b""
         try:
@@ -553,6 +555,12 @@ def execute_http_get(
 
     except Exception as e:
         raise TrackerConnectionError(f"Erro inesperado ao comunicar com o tracker: {e}") from e
+
+    finally:
+        if resp is not None:
+            close = getattr(resp, "close", None)
+            if callable(close):
+                close()
 
 
 def query_http_tracker(

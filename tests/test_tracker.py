@@ -53,9 +53,13 @@ class MockHTTPResponse:
         self.data = data
         self.code = code
         self.headers = headers or {}
+        self.closed = False
 
     def read(self) -> bytes:
         return self.data
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class TestAnnounceUrlBuilder(unittest.TestCase):
@@ -398,12 +402,14 @@ class TestNetworkExecutionAndMocks(unittest.TestCase):
     def test_execute_http_get_gzip_support(self):
         raw_bencode = encode_bencode({b"interval": 600, b"peers": b""})
         compressed = gzip.compress(raw_bencode)
+        response = MockHTTPResponse(compressed, headers={"Content-Encoding": "gzip"})
 
         def mock_opener(req, timeout=15.0):
-            return MockHTTPResponse(compressed, headers={"Content-Encoding": "gzip"})
+            return response
 
         data = execute_http_get("http://tracker.test/announce", opener=mock_opener)
         self.assertEqual(data, raw_bencode)
+        self.assertTrue(response.closed)
 
     def test_http_error_handling(self):
         def mock_opener_404(req, timeout=15.0):
