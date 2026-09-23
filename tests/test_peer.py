@@ -492,7 +492,7 @@ class TestPeerConnectionWithSocketpair(unittest.TestCase):
         self.assertIsInstance(r3, KeepAliveMessage)
 
     def test_state_tracking_and_helpers(self):
-        conn = PeerConnection(sock=self.s_client, default_timeout=5.0)
+        conn = PeerConnection(sock=self.s_client, default_timeout=5.0, num_pieces=8)
 
         # Estado inicial
         self.assertTrue(conn.am_choking)
@@ -527,6 +527,16 @@ class TestPeerConnectionWithSocketpair(unittest.TestCase):
         msg_have = conn.read_message()
         self.assertIsInstance(msg_have, HaveMessage)
         self.assertTrue(conn.peer_bitfield.has_piece(2))
+
+    def test_bitfield_rejects_nonzero_spare_bits(self):
+        conn = PeerConnection(sock=self.s_client, default_timeout=5.0, num_pieces=10)
+
+        # Para 10 peças, os 6 bits inferiores do segundo byte são sobressalentes.
+        invalid_bitfield = BitfieldMessage(bitfield=bytes([0x00, 0x01])).encode()
+        self.s_server.sendall(invalid_bitfield)
+
+        with self.assertRaises(PeerProtocolError):
+            conn.read_message()
 
     def test_connection_closed_raises_error(self):
         conn = PeerConnection(sock=self.s_client, default_timeout=5.0)

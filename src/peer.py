@@ -733,10 +733,12 @@ class PeerConnection:
         port: Optional[int] = None,
         sock: Optional[socket.socket] = None,
         default_timeout: float = 10.0,
+        num_pieces: Optional[int] = None,
     ):
         self.peer_host = host
         self.peer_port = port
         self.default_timeout = default_timeout
+        self.num_pieces = num_pieces
         self._sock: Optional[socket.socket] = sock
         self._buffer = bytearray()
         self.peer_handshake: Optional[Handshake] = None
@@ -977,7 +979,7 @@ class PeerConnection:
         elif isinstance(msg, NotInterestedMessage):
             self.peer_interested = False
         elif isinstance(msg, BitfieldMessage):
-            self.peer_bitfield = Bitfield.from_bytes(msg.bitfield)
+            self.peer_bitfield = msg.to_bitfield(num_pieces=self.num_pieces)
         elif isinstance(msg, HaveMessage):
             if self.peer_bitfield is not None and msg.piece_index < self.peer_bitfield.num_pieces:
                 self.peer_bitfield.set_piece(msg.piece_index, True)

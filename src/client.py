@@ -433,6 +433,7 @@ class TorrentClient:
             host=peer.ip,
             port=peer.port,
             default_timeout=self.peer_timeout,
+            num_pieces=self.torrent_meta.num_pieces,
         )
 
         try:
