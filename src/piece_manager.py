@@ -20,7 +20,12 @@ from typing import List, Optional, Sequence, Tuple, Union
 
 from .hash_utils import verify_sha1
 from .peer import DEFAULT_BLOCK_SIZE, Bitfield
-from .torrent import TorrentMetadata, load_torrent_bytes, load_torrent_file
+from .torrent import (
+    TorrentMetadata,
+    TorrentSecurityError,
+    load_torrent_bytes,
+    load_torrent_file,
+)
 
 
 # ==============================================================================
@@ -330,6 +335,7 @@ class PieceManager:
             else:
                 raise TypeError(f"Tipo inválido para torrent: {type(torrent).__name__}.")
 
+        self.metadata: Optional[TorrentMetadata] = resolved_meta
         if resolved_meta is not None:
             self.total_length = resolved_meta.total_length
             self.piece_length = resolved_meta.piece_length
@@ -700,9 +706,39 @@ class PieceManager:
 
     def save_to_file(self, target_path: Union[str, Path]) -> None:
         """
-        Grava os dados reconstruídos do torrent em um arquivo no disco.
+        Grava os dados reconstruídos do torrent no disco.
+        
+        Suporta:
+        - Torrents single-file (ou instâncias sem metadados): grava em arquivo único no caminho indicado.
+        - Torrents multi-file: grava todos os arquivos preservando a árvore de diretórios especificada
+          pelos metadados sob o diretório base fornecido.
         """
         data = self.get_all_data()
-        path = Path(target_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
+        dest = Path(target_path).resolve()
+
+        if self.metadata is not None and self.metadata.is_multi_file:
+            base_dir = (dest / self.metadata.name).resolve() if dest.name != self.metadata.name else dest
+            offset = 0
+            for file_info in self.metadata.files:
+                file_path = base_dir.joinpath(*file_info.path).resolve()
+                try:
+                    file_path.relative_to(base_dir)
+                except ValueError:
+                    raise TorrentSecurityError(f"Tentativa de Path Traversal ao salvar arquivo: {file_path}")
+
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                file_data = data[offset : offset + file_info.length]
+                file_path.write_bytes(file_data)
+                offset += file_info.length
+        else:
+            if self.metadata is not None and not self.metadata.is_multi_file and dest.is_dir():
+                target_file = (dest / self.metadata.name).resolve()
+                try:
+                    target_file.relative_to(dest)
+                except ValueError:
+                    raise TorrentSecurityError(f"Tentativa de Path Traversal ao salvar arquivo: {target_file}")
+            else:
+                target_file = dest
+
+            target_file.parent.mkdir(parents=True, exist_ok=True)
+            target_file.write_bytes(data)

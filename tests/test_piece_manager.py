@@ -402,6 +402,61 @@ class TestPieceManager(unittest.TestCase):
         self.assertFalse(self.pm.reset_block(999, 0))
         self.assertFalse(self.pm.reset_block(0, 999999))
 
+    def test_save_to_file_multi_file_torrent(self):
+        """Testa save_to_file preservando a hierarquia de diretórios em torrents multi-file."""
+        from src.bencode import encode_bencode
+        from src.torrent import load_torrent_bytes
+
+        file1_data = b"Hello from file 1! " * 500  # 9500 bytes
+        file2_data = b"Nested file 2 data! " * 600  # 12000 bytes
+        total_data = file1_data + file2_data       # 21500 bytes
+        piece_len = 8192
+
+        p0 = total_data[0:8192]
+        p1 = total_data[8192:16384]
+        p2 = total_data[16384:21500]
+        pieces_hashes = compute_sha1(p0) + compute_sha1(p1) + compute_sha1(p2)
+
+        meta_dict = {
+            b"announce": b"http://tracker.local/announce",
+            b"info": {
+                b"name": b"my_multi_package",
+                b"piece length": piece_len,
+                b"pieces": pieces_hashes,
+                b"files": [
+                    {b"length": len(file1_data), b"path": [b"docs", b"file1.txt"]},
+                    {b"length": len(file2_data), b"path": [b"media", b"video", b"file2.bin"]},
+                ],
+            },
+        }
+        torrent_bytes = encode_bencode(meta_dict)
+        meta = load_torrent_bytes(torrent_bytes)
+
+        pm = PieceManager(meta, block_size=4096)
+
+        # Preenche as peças
+        for p_idx, p_data in enumerate([p0, p1, p2]):
+            piece = pm.get_piece(p_idx)
+            for block in piece.blocks:
+                b_data = p_data[block.begin : block.begin + block.length]
+                pm.add_block(p_idx, block.begin, b_data)
+
+        self.assertTrue(pm.is_complete)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = Path(tmpdir) / "output_dir"
+            pm.save_to_file(dest)
+
+            # Verifica os arquivos no destino
+            out_file1 = dest / "my_multi_package" / "docs" / "file1.txt"
+            out_file2 = dest / "my_multi_package" / "media" / "video" / "file2.bin"
+
+            self.assertTrue(out_file1.exists())
+            self.assertTrue(out_file2.exists())
+            self.assertEqual(out_file1.read_bytes(), file1_data)
+            self.assertEqual(out_file2.read_bytes(), file2_data)
+
 
 if __name__ == "__main__":
     unittest.main()
+
