@@ -1,5 +1,5 @@
 """
-Utilitários centralizados para cálculo de hashes SHA-1 e validação de peças.
+Centralized utilities for SHA-1 hash calculation and piece validation.
 """
 
 import hashlib
@@ -7,17 +7,18 @@ import hashlib
 
 def compute_sha1(data: bytes) -> bytes:
     """
-    Calcula e retorna o hash SHA-1 de 20 bytes para o buffer fornecido.
+    Compute and return the 20-byte SHA-1 hash for the provided buffer.
     """
     if not isinstance(data, (bytes, bytearray)):
-        raise TypeError(f"Esperado bytes ou bytearray, obtido {type(data).__name__}.")
+        raise TypeError(f"Expected bytes or bytearray, got {type(data).__name__}.")
     return hashlib.sha1(data).digest()
 
 
 def verify_sha1(data: bytes, expected_hash: bytes) -> bool:
     """
-    Verifica se o hash SHA-1 dos dados coincide com o hash esperado de 20 bytes.
+    Verify whether the SHA-1 hash of the data matches the expected 20-byte hash.
     """
     if len(expected_hash) != 20:
-        raise ValueError(f"Hash esperado deve ter exatamente 20 bytes, obtido {len(expected_hash)} bytes.")
+        raise ValueError(f"Expected hash must be exactly 20 bytes, got {len(expected_hash)} bytes.")
     return compute_sha1(data) == expected_hash
+

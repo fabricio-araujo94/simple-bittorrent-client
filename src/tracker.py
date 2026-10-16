@@ -1,15 +1,15 @@
 """
-Módulo para comunicação com trackers BitTorrent via HTTP/HTTPS.
+Module for communicating with BitTorrent trackers via HTTP/HTTPS.
 
-Implementa a especificação de announce HTTP do BitTorrent (BEP 0003, BEP 0023):
-- Construção de requisições GET de announce com parâmetros obrigatórios e opcionais;
-- URL encoding rigoroso (RFC 3986 / percent-encoding) para dados binários como info_hash e peer_id;
-- Geração de peer_id único no padrão Azureus-style;
-- Parsing e validação da resposta Bencode do tracker;
-- Tratamento de 'failure reason' e mensagens de aviso ('warning message');
-- Extração de peers tanto no formato compactado IPv4 (BEP 0023: 6 bytes por peer) quanto em dicionários/listas (BEP 0003);
-- Tratamento estruturado de erros HTTP, falhas de conexão e timeouts;
-- Suporte a injeção de transportes/openers HTTP para testes determinísticos sem acesso à rede externa.
+Implements the BitTorrent HTTP announce specification (BEP 0003, BEP 0023):
+- Constructing GET announce requests with mandatory and optional parameters;
+- Strict URL encoding (RFC 3986 / percent-encoding) for binary data such as info_hash and peer_id;
+- Generating unique peer_id in Azureus-style format;
+- Parsing and validating Bencode tracker responses;
+- Handling 'failure reason' and 'warning message';
+- Extracting peers both in IPv4 compact format (BEP 0023: 6 bytes per peer) and dictionary/list format (BEP 0003);
+- Structured handling of HTTP errors, connection failures, and timeouts;
+- Support for injecting custom HTTP transports/openers for deterministic testing without external network access.
 """
 
 import gzip
@@ -29,26 +29,26 @@ from .torrent import TorrentMetadata, load_torrent_bytes, load_torrent_file
 
 
 # ==============================================================================
-# Exceções
+# Exceptions
 # ==============================================================================
 
 class TrackerError(Exception):
-    """Exceção base para todos os erros relacionados a trackers BitTorrent."""
+    """Base exception for all BitTorrent tracker-related errors."""
     pass
 
 
 class TrackerConnectionError(TrackerError):
-    """Exceção lançada quando ocorre falha de conexão de rede com o tracker."""
+    """Exception raised when a network connection failure occurs with the tracker."""
     pass
 
 
 class TrackerTimeoutError(TrackerConnectionError):
-    """Exceção lançada quando a comunicação com o tracker excede o timeout limite."""
+    """Exception raised when communication with the tracker exceeds the timeout limit."""
     pass
 
 
 class TrackerHTTPError(TrackerError):
-    """Exceção lançada quando o servidor HTTP retorna um status de erro (4xx, 5xx)."""
+    """Exception raised when the HTTP server returns an error status code (4xx, 5xx)."""
 
     def __init__(self, message: str, status_code: Optional[int] = None):
         super().__init__(message)
@@ -56,26 +56,26 @@ class TrackerHTTPError(TrackerError):
 
 
 class TrackerResponseError(TrackerError):
-    """Exceção lançada quando a resposta do tracker é inválida, malformada ou inesperada."""
+    """Exception raised when the tracker response is invalid, malformed, or unexpected."""
     pass
 
 
 class TrackerFailureError(TrackerResponseError):
-    """Exceção lançada quando o tracker responde explicitamente com 'failure reason'."""
+    """Exception raised when the tracker explicitly responds with 'failure reason'."""
 
     def __init__(self, failure_reason: str):
-        super().__init__(f"Tracker rejeitou a requisição: {failure_reason}")
+        super().__init__(f"Tracker rejected request: {failure_reason}")
         self.failure_reason = failure_reason
 
 
 # ==============================================================================
-# Estruturas de Dados
+# Data Structures
 # ==============================================================================
 
 @dataclass(frozen=True)
 class PeerInfo:
     """
-    Representação estruturada e imutável de um peer BitTorrent.
+    Structured and immutable representation of a BitTorrent peer.
     """
     ip: str
     port: int
@@ -83,7 +83,7 @@ class PeerInfo:
 
     @property
     def peer_id_hex(self) -> Optional[str]:
-        """Retorna o peer_id em string hexadecimal, se presente."""
+        """Return the peer_id as a hexadecimal string, if present."""
         return self.peer_id.hex() if self.peer_id else None
 
     def __str__(self) -> str:
@@ -95,7 +95,7 @@ class PeerInfo:
 @dataclass(frozen=True)
 class TrackerResponse:
     """
-    Representação estruturada da resposta Bencode retornada por um tracker HTTP.
+    Structured representation of the Bencode response returned by an HTTP tracker.
     """
     interval: int
     peers: List[PeerInfo]
@@ -108,25 +108,25 @@ class TrackerResponse:
 
     @property
     def num_peers(self) -> int:
-        """Número de peers retornados nesta resposta."""
+        """Number of peers returned in this response."""
         return len(self.peers)
 
 
 # ==============================================================================
-# Utilitários de Peer ID e Codificação
+# Peer ID Utilities and Encoding
 # ==============================================================================
 
 def generate_peer_id(prefix: str = "-ST0001-") -> bytes:
     """
-    Gera um identificador único de 20 bytes para este cliente (BEP 0020).
-    Padrão Azureus-style: prefixo de 8 caracteres + 12 caracteres alfanuméricos aleatórios.
-    
-    Exemplo: b'-ST0001-a1b2c3d4e5f6'
+    Generate a unique 20-byte identifier for this client (BEP 0020).
+    Azureus-style default: 8-character prefix + 12 random alphanumeric characters.
+
+    Example: b'-ST0001-a1b2c3d4e5f6'
     """
     prefix_bytes = prefix.encode("ascii")
     if len(prefix_bytes) > 20:
         raise ValueError(
-            f"Prefixo do peer_id não pode ter mais de 20 bytes (possui {len(prefix_bytes)} bytes)."
+            f"peer_id prefix cannot be longer than 20 bytes (has {len(prefix_bytes)} bytes)."
         )
     remaining_len = 20 - len(prefix_bytes)
     random_chars = "".join(random.choices(string.ascii_letters + string.digits, k=remaining_len))
@@ -135,15 +135,15 @@ def generate_peer_id(prefix: str = "-ST0001-") -> bytes:
 
 def urlencode_binary(data: Union[bytes, bytearray, memoryview]) -> str:
     """
-    Realiza o percent-encoding estrito de bytes brutos conforme RFC 3986.
-    Garante que bytes não-alfanuméricos (incluindo espaços, bytes nulos e caracteres de controle)
-    sejam escapados no formato %XX em maiúsculas.
+    Perform strict percent-encoding of raw bytes according to RFC 3986.
+    Ensures non-alphanumeric bytes (including spaces, null bytes, and control characters)
+    are escaped as uppercase %XX.
     """
     return urllib.parse.quote_from_bytes(bytes(data), safe=b"")
 
 
 # ==============================================================================
-# Construção de URLs de Announce
+# Announce URL Construction
 # ==============================================================================
 
 def build_announce_url(
@@ -163,52 +163,52 @@ def build_announce_url(
     trackerid: Optional[str] = None,
 ) -> str:
     """
-    Constrói a URL completa para uma requisição GET de announce ao tracker HTTP.
+    Build the full URL for an HTTP GET announce request to the tracker.
 
-    Respeita com rigor as especificações BEP 0003 e BEP 0023:
-    - `info_hash`: 20 bytes brutos convertidos via percent-encoding (não usar hex!);
-    - `peer_id`: 20 bytes ou string convertida via percent-encoding;
-    - `port`: porta TCP em escuta (1-65535);
-    - `uploaded`: total de bytes enviados até o momento (inteiro >= 0);
-    - `downloaded`: total de bytes baixados até o momento (inteiro >= 0);
-    - `left`: total de bytes restantes para download (inteiro >= 0);
-    - `compact`: se True, envia `compact=1` indicando suporte a lista compacta de peers;
-    - `event`: evento do cliente ('started', 'completed', 'stopped' ou None para regular);
-    - Parâmetros opcionais adicionais: no_peer_id, numwant, ip, key, trackerid.
+    Strictly complies with BEP 0003 and BEP 0023 specifications:
+    - `info_hash`: 20 raw bytes converted via percent-encoding (do not use hex!);
+    - `peer_id`: 20 bytes or string converted via percent-encoding;
+    - `port`: TCP listening port (1-65535);
+    - `uploaded`: total bytes uploaded so far (integer >= 0);
+    - `downloaded`: total bytes downloaded so far (integer >= 0);
+    - `left`: remaining bytes to download (integer >= 0);
+    - `compact`: if True, sends `compact=1` indicating support for compact peer lists;
+    - `event`: client event ('started', 'completed', 'stopped', or None for regular);
+    - Additional optional parameters: no_peer_id, numwant, ip, key, trackerid.
 
     Raises:
-        ValueError / TypeError: Se algum parâmetro for inválido ou de tipo incorreto.
+        ValueError / TypeError: If any parameter is invalid or has an incorrect type.
     """
     if not isinstance(base_url, str) or not base_url.strip():
-        raise ValueError("URL base do tracker não pode ser vazia.")
+        raise ValueError("Tracker base URL cannot be empty.")
 
-    # 1. info_hash: deve ser exatamente 20 bytes
+    # 1. info_hash: must be exactly 20 bytes
     if not isinstance(info_hash, (bytes, bytearray, memoryview)):
-        raise TypeError(f"info_hash deve ser bytes, obtido {type(info_hash).__name__}.")
+        raise TypeError(f"info_hash must be bytes, got {type(info_hash).__name__}.")
     info_hash_bytes = bytes(info_hash)
     if len(info_hash_bytes) != 20:
-        raise ValueError(f"info_hash deve ter exatamente 20 bytes, obtido {len(info_hash_bytes)} bytes.")
+        raise ValueError(f"info_hash must be exactly 20 bytes, got {len(info_hash_bytes)} bytes.")
 
-    # 2. peer_id: deve ter exatamente 20 bytes
+    # 2. peer_id: must be exactly 20 bytes
     if isinstance(peer_id, str):
         peer_id_bytes = peer_id.encode("utf-8")
     elif isinstance(peer_id, (bytes, bytearray, memoryview)):
         peer_id_bytes = bytes(peer_id)
     else:
-        raise TypeError(f"peer_id deve ser str ou bytes, obtido {type(peer_id).__name__}.")
+        raise TypeError(f"peer_id must be str or bytes, got {type(peer_id).__name__}.")
     if len(peer_id_bytes) != 20:
-        raise ValueError(f"peer_id deve ter exatamente 20 bytes, obtido {len(peer_id_bytes)} bytes.")
+        raise ValueError(f"peer_id must be exactly 20 bytes, got {len(peer_id_bytes)} bytes.")
 
     # 3. port: 1-65535
     if not isinstance(port, int) or isinstance(port, bool) or not (0 < port <= 65535):
-        raise ValueError(f"port deve ser um inteiro entre 1 e 65535, obtido {port!r}.")
+        raise ValueError(f"port must be an integer between 1 and 65535, got {port!r}.")
 
-    # 4. uploaded, downloaded, left: inteiros >= 0
+    # 4. uploaded, downloaded, left: integers >= 0
     for name, val in [("uploaded", uploaded), ("downloaded", downloaded), ("left", left)]:
         if not isinstance(val, int) or isinstance(val, bool) or val < 0:
-            raise ValueError(f"{name} deve ser um inteiro não-negativo (>= 0), obtido {val!r}.")
+            raise ValueError(f"{name} must be a non-negative integer (>= 0), got {val!r}.")
 
-    # Montagem dos parâmetros
+    # Parameter assembly
     query_params: List[str] = [
         f"info_hash={urlencode_binary(info_hash_bytes)}",
         f"peer_id={urlencode_binary(peer_id_bytes)}",
@@ -229,7 +229,7 @@ def build_announce_url(
 
     if numwant is not None:
         if not isinstance(numwant, int) or isinstance(numwant, bool) or numwant < 0:
-            raise ValueError(f"numwant deve ser um inteiro não-negativo (>= 0), obtido {numwant!r}.")
+            raise ValueError(f"numwant must be a non-negative integer (>= 0), got {numwant!r}.")
         query_params.append(f"numwant={numwant}")
 
     if ip is not None:
@@ -251,10 +251,10 @@ def build_announce_url(
     parsed_base = urllib.parse.urlparse(clean_base)
     if parsed_base.scheme.lower() not in ("http", "https"):
         raise TrackerError(
-            f"Esquema de URL do tracker não suportado ou inseguro: {parsed_base.scheme!r} (apenas http e https são permitidos)."
+            f"Unsupported or insecure tracker URL scheme: {parsed_base.scheme!r} (only http and https are allowed)."
         )
     if not parsed_base.netloc:
-        raise TrackerError(f"URL de tracker inválida (hostname ausente): {clean_base!r}.")
+        raise TrackerError(f"Invalid tracker URL (missing hostname): {clean_base!r}.")
 
     query_string = "&".join(query_params)
 
@@ -266,24 +266,24 @@ def build_announce_url(
 
 
 # ==============================================================================
-# Parsing de Respostas e Extração de Peers
+# Response Parsing and Peer Extraction
 # ==============================================================================
 
 def parse_compact_peers_ipv4(peers_bytes: Union[bytes, bytearray, memoryview]) -> List[PeerInfo]:
     """
-    Decodifica a lista de peers no formato compacto IPv4 (BEP 0023).
+    Decode peer list in compact IPv4 format (BEP 0023).
 
-    Cada peer é codificado em 6 bytes contíguos em ordem de rede (big-endian):
-    - Bytes 0..3: Endereço IPv4 (ex: \x7f\x00\x00\x01 -> "127.0.0.1")
-    - Bytes 4..5: Porta TCP (ex: \x1a\xe1 -> 6881)
+    Each peer is encoded in 6 contiguous bytes in network byte order (big-endian):
+    - Bytes 0..3: IPv4 address (e.g., \x7f\x00\x00\x01 -> "127.0.0.1")
+    - Bytes 4..5: TCP port (e.g., \x1a\xe1 -> 6881)
 
     Raises:
-        TrackerResponseError: Se o tamanho não for múltiplo exato de 6 bytes.
+        TrackerResponseError: If length is not an exact multiple of 6 bytes.
     """
     raw = bytes(peers_bytes)
     if len(raw) % 6 != 0:
         raise TrackerResponseError(
-            f"Tamanho dos peers compactados ({len(raw)} bytes) não é múltiplo de 6 bytes."
+            f"Length of compact peers ({len(raw)} bytes) is not a multiple of 6 bytes."
         )
 
     peers: List[PeerInfo] = []
@@ -300,50 +300,50 @@ def parse_compact_peers_ipv4(peers_bytes: Union[bytes, bytearray, memoryview]) -
 
 def parse_dictionary_peers(peers_list: list) -> List[PeerInfo]:
     """
-    Decodifica a lista de peers no formato tradicional de dicionários (BEP 0003).
+    Decode peer list in traditional dictionary format (BEP 0003).
 
-    Cada item da lista é um dicionário contendo:
-    - 'ip': string ou byte string com o IP/hostname do peer;
-    - 'port': inteiro com a porta TCP;
-    - 'peer id' (opcional): byte string de 20 bytes com a identidade do peer.
+    Each item in the list is a dictionary containing:
+    - 'ip': string or byte string with peer IP/hostname;
+    - 'port': integer with TCP port;
+    - 'peer id' (optional): 20-byte string with peer identity.
 
     Raises:
-        TrackerResponseError: Se a estrutura ou tipos dos dados forem inválidos.
+        TrackerResponseError: If data structure or types are invalid.
     """
     if not isinstance(peers_list, list):
         raise TrackerResponseError(
-            f"Formato de peers inválido: esperado list, obtido {type(peers_list).__name__}."
+            f"Invalid peers format: expected list, got {type(peers_list).__name__}."
         )
 
     peers: List[PeerInfo] = []
     for idx, item in enumerate(peers_list):
         if not isinstance(item, dict):
-            raise TrackerResponseError(f"Item {idx} na lista de peers deve ser um dicionário.")
+            raise TrackerResponseError(f"Item {idx} in peer list must be a dictionary.")
 
         # ip
         if b"ip" not in item:
-            raise TrackerResponseError(f"Campo 'ip' ausente no peer {idx}.")
+            raise TrackerResponseError(f"Missing 'ip' field in peer {idx}.")
         raw_ip = item[b"ip"]
         if isinstance(raw_ip, (bytes, bytearray)):
             ip_str = bytes(raw_ip).decode("utf-8", errors="replace").strip()
         elif isinstance(raw_ip, str):
             ip_str = raw_ip.strip()
         else:
-            raise TrackerResponseError(f"Campo 'ip' no peer {idx} deve ser bytes ou str.")
+            raise TrackerResponseError(f"'ip' field in peer {idx} must be bytes or str.")
 
         if not ip_str:
-            raise TrackerResponseError(f"Campo 'ip' no peer {idx} não pode ser vazio.")
+            raise TrackerResponseError(f"'ip' field in peer {idx} cannot be empty.")
 
         # port
         if b"port" not in item:
-            raise TrackerResponseError(f"Campo 'port' ausente no peer {idx}.")
+            raise TrackerResponseError(f"Missing 'port' field in peer {idx}.")
         port_val = item[b"port"]
         if not isinstance(port_val, int) or isinstance(port_val, bool) or not (0 < port_val <= 65535):
             raise TrackerResponseError(
-                f"Porta inválida para o peer {idx}: deve ser inteiro entre 1 e 65535, obtido {port_val!r}."
+                f"Invalid port for peer {idx}: must be integer between 1 and 65535, got {port_val!r}."
             )
 
-        # peer id (opcional)
+        # peer id (optional)
         peer_id_bytes: Optional[bytes] = None
         if b"peer id" in item:
             raw_pid = item[b"peer id"]
@@ -352,7 +352,7 @@ def parse_dictionary_peers(peers_list: list) -> List[PeerInfo]:
             elif isinstance(raw_pid, str):
                 peer_id_bytes = raw_pid.encode("utf-8")
             else:
-                raise TrackerResponseError(f"Campo 'peer id' no peer {idx} deve ser bytes ou str.")
+                raise TrackerResponseError(f"'peer id' field in peer {idx} must be bytes or str.")
 
         peers.append(PeerInfo(ip=ip_str, port=port_val, peer_id=peer_id_bytes))
 
@@ -361,30 +361,30 @@ def parse_dictionary_peers(peers_list: list) -> List[PeerInfo]:
 
 def parse_tracker_response(raw_response: Union[bytes, bytearray, memoryview]) -> TrackerResponse:
     """
-    Decodifica e valida a resposta Bencoded recebida de um tracker HTTP (BEP 0003, BEP 0023).
+    Decode and validate Bencoded response received from an HTTP tracker (BEP 0003, BEP 0023).
 
     Raises:
-        TrackerFailureError: Se o tracker respondeu com 'failure reason'.
-        TrackerResponseError: Se o Bencode for inválido ou faltar campos obrigatórios (como 'interval').
+        TrackerFailureError: If tracker responded with 'failure reason'.
+        TrackerResponseError: If Bencode is invalid or required fields are missing (such as 'interval').
     """
     if not isinstance(raw_response, (bytes, bytearray, memoryview)):
         raise TrackerResponseError(
-            f"Resposta do tracker esperada como bytes, obtido {type(raw_response).__name__}."
+            f"Tracker response expected as bytes, got {type(raw_response).__name__}."
         )
 
     raw_bytes = bytes(raw_response)
     if not raw_bytes:
-        raise TrackerResponseError("Resposta vazia recebida do tracker.")
+        raise TrackerResponseError("Empty response received from tracker.")
 
     try:
         data = decode_bencode(raw_bytes, strict=False)
     except BencodeError as e:
-        raise TrackerResponseError(f"Erro ao decodificar Bencode da resposta do tracker: {e}") from e
+        raise TrackerResponseError(f"Error decoding Bencode from tracker response: {e}") from e
 
     if not isinstance(data, dict):
-        raise TrackerResponseError("A raiz da resposta Bencode do tracker deve ser um dicionário.")
+        raise TrackerResponseError("Tracker Bencode response root must be a dictionary.")
 
-    # 1. Verifica falha explícita reportada pelo tracker ('failure reason')
+    # 1. Check explicit failure reported by tracker ('failure reason')
     if b"failure reason" in data:
         reason_raw = data[b"failure reason"]
         if isinstance(reason_raw, (bytes, bytearray)):
@@ -393,17 +393,17 @@ def parse_tracker_response(raw_response: Union[bytes, bytearray, memoryview]) ->
             reason_str = str(reason_raw)
         raise TrackerFailureError(reason_str)
 
-    # 2. Valida e extrai intervalo obrigatório
+    # 2. Validate and extract mandatory interval
     if b"interval" not in data:
-        raise TrackerResponseError("Campo obrigatório 'interval' não encontrado na resposta do tracker.")
+        raise TrackerResponseError("Required 'interval' field not found in tracker response.")
 
     interval_val = data[b"interval"]
     if not isinstance(interval_val, int) or isinstance(interval_val, bool) or interval_val <= 0:
         raise TrackerResponseError(
-            f"Campo 'interval' deve ser um inteiro estritamente positivo (> 0), obtido {interval_val!r}."
+            f"'interval' field must be a strictly positive integer (> 0), got {interval_val!r}."
         )
 
-    # 3. Extrai peers (compactados ou lista de dicionários)
+    # 3. Extract peers (compact or list of dictionaries)
     peers: List[PeerInfo] = []
     if b"peers" in data:
         raw_peers = data[b"peers"]
@@ -413,10 +413,10 @@ def parse_tracker_response(raw_response: Union[bytes, bytearray, memoryview]) ->
             peers = parse_dictionary_peers(raw_peers)
         else:
             raise TrackerResponseError(
-                f"Formato inválido para o campo 'peers': esperado bytes ou list, obtido {type(raw_peers).__name__}."
+                f"Invalid format for 'peers' field: expected bytes or list, got {type(raw_peers).__name__}."
             )
 
-    # 4. Extrai campos opcionais da especificação
+    # 4. Extract optional specification fields
     min_interval = None
     if b"min interval" in data and isinstance(data[b"min interval"], int) and not isinstance(data[b"min interval"], bool):
         min_interval = data[b"min interval"]
@@ -451,7 +451,7 @@ def parse_tracker_response(raw_response: Union[bytes, bytearray, memoryview]) ->
 
 
 # ==============================================================================
-# Execução de Requisições HTTP com urllib
+# HTTP Request Execution with urllib
 # ==============================================================================
 
 def execute_http_get(
@@ -461,18 +461,18 @@ def execute_http_get(
     opener: Optional[Any] = None,
 ) -> bytes:
     """
-    Executa uma requisição HTTP GET utilizando urllib e retorna o corpo da resposta em bytes.
+    Execute an HTTP GET request using urllib and return response body as bytes.
 
-    Suporta descompressão automática de gzip e mapeia exceções de rede/HTTP para a hierarquia
-    de exceções TrackerError.
+    Supports automatic gzip decompression and maps network/HTTP exceptions to the
+    TrackerError exception hierarchy.
 
-    Permite injeção de `opener` customizado (função ou urllib OpenerDirector) para testes
-    unitários sem necessidade de conexão com a Internet real.
+    Allows injection of custom `opener` (function or urllib OpenerDirector) for
+    unit testing without actual Internet connection.
     """
     parsed_url = urllib.parse.urlparse(url)
     if parsed_url.scheme.lower() not in ("http", "https"):
         raise TrackerError(
-            f"Esquema de URL inseguro ou não suportado: {parsed_url.scheme!r} (apenas http e https são permitidos)."
+            f"Unsupported or insecure URL scheme: {parsed_url.scheme!r} (only http and https are allowed)."
         )
 
     req = urllib.request.Request(
@@ -492,13 +492,13 @@ def execute_http_get(
             elif callable(opener):
                 resp = opener(req, timeout=timeout)
             else:
-                raise TypeError(f"Opener fornecido não é chamável nem possui método 'open': {opener!r}.")
+                raise TypeError(f"Provided opener is not callable and has no 'open' method: {opener!r}.")
         else:
             resp = urllib.request.urlopen(req, timeout=timeout)
 
         raw_bytes = resp.read()
 
-        # Descompressão automática de gzip caso retornado
+        # Automatic gzip decompression if returned
         is_gzip = False
         if hasattr(resp, "headers") and resp.headers:
             content_encoding = resp.headers.get("Content-Encoding", "").lower()
@@ -518,7 +518,7 @@ def execute_http_get(
 
     except urllib.error.HTTPError as e:
         resp = e
-        # Se o servidor HTTP retornar corpo com 'failure reason' Bencoded (ex: 400 ou 403)
+        # If HTTP server returns body with Bencoded 'failure reason' (e.g. 400 or 403)
         body = b""
         try:
             body = e.read()
@@ -538,23 +538,23 @@ def execute_http_get(
                 pass
 
         raise TrackerHTTPError(
-            f"Tracker retornou erro HTTP {e.code}: {e.reason}",
+            f"Tracker returned HTTP error {e.code}: {e.reason}",
             status_code=e.code,
         ) from e
 
     except urllib.error.URLError as e:
         if isinstance(e.reason, (socket.timeout, TimeoutError)) or "timed out" in str(e.reason).lower():
-            raise TrackerTimeoutError(f"Timeout ao conectar ao tracker: {e.reason}") from e
-        raise TrackerConnectionError(f"Falha de conexão com o tracker: {e.reason}") from e
+            raise TrackerTimeoutError(f"Timeout connecting to tracker: {e.reason}") from e
+        raise TrackerConnectionError(f"Connection failure with tracker: {e.reason}") from e
 
     except (socket.timeout, TimeoutError) as e:
-        raise TrackerTimeoutError(f"Timeout ao conectar ao tracker: {e}") from e
+        raise TrackerTimeoutError(f"Timeout connecting to tracker: {e}") from e
 
     except TrackerError:
         raise
 
     except Exception as e:
-        raise TrackerConnectionError(f"Erro inesperado ao comunicar com o tracker: {e}") from e
+        raise TrackerConnectionError(f"Unexpected error communicating with tracker: {e}") from e
 
     finally:
         if resp is not None:
@@ -583,8 +583,8 @@ def query_http_tracker(
     opener: Optional[Any] = None,
 ) -> TrackerResponse:
     """
-    Função utilitária direta para consultar um tracker HTTP, executar o announce
-    e retornar o TrackerResponse decodificado.
+    Direct utility function to query an HTTP tracker, execute announce,
+    and return decoded TrackerResponse.
     """
     url = build_announce_url(
         base_url=announce_url,
@@ -607,18 +607,18 @@ def query_http_tracker(
 
 
 # ==============================================================================
-# Cliente HTTP de Tracker
+# HTTP Tracker Client
 # ==============================================================================
 
 class HTTPTrackerClient:
     """
-    Cliente de alto nível para gerenciamento e comunicação com trackers BitTorrent HTTP.
+    High-level client for managing and communicating with BitTorrent HTTP trackers.
 
-    Pode ser instanciado diretamente a partir de:
-    - Um objeto `TorrentMetadata`;
-    - O conteúdo de bytes de um arquivo .torrent;
-    - O caminho em disco para um arquivo .torrent;
-    - Ou parâmetros explícitos (`info_hash`, `announce_url`, `total_length`).
+    Can be instantiated directly from:
+    - A `TorrentMetadata` object;
+    - Raw bytes content of a .torrent file;
+    - Filesystem path to a .torrent file;
+    - Or explicit parameters (`info_hash`, `announce_url`, `total_length`).
     """
 
     def __init__(
@@ -644,18 +644,18 @@ class HTTPTrackerClient:
                 self.torrent_meta = load_torrent_bytes(torrent)
             else:
                 raise TypeError(
-                    f"Tipo inválido para o argumento torrent: {type(torrent).__name__}."
+                    f"Invalid type for torrent argument: {type(torrent).__name__}."
                 )
 
-        # Resolução de info_hash
+        # Resolve info_hash
         resolved_info_hash = info_hash
         if resolved_info_hash is None and self.torrent_meta is not None:
             resolved_info_hash = self.torrent_meta.info_hash
         if resolved_info_hash is None:
-            raise ValueError("info_hash não fornecido e não encontrado no torrent.")
+            raise ValueError("info_hash not provided and not found in torrent.")
         self.info_hash = bytes(resolved_info_hash)
 
-        # Resolução de announce_url
+        # Resolve announce_url
         resolved_announce = announce_url
         if resolved_announce is None and self.torrent_meta is not None:
             resolved_announce = self.torrent_meta.announce or (
@@ -663,13 +663,13 @@ class HTTPTrackerClient:
             )
         self.announce_url = resolved_announce
 
-        # Resolução de total_length
+        # Resolve total_length
         resolved_length = total_length
         if resolved_length is None and self.torrent_meta is not None:
             resolved_length = self.torrent_meta.total_length
         self.total_length = resolved_length if resolved_length is not None else 0
 
-        # Resolução de peer_id
+        # Resolve peer_id
         if peer_id is None:
             self.peer_id = generate_peer_id()
         elif isinstance(peer_id, str):
@@ -677,13 +677,13 @@ class HTTPTrackerClient:
         elif isinstance(peer_id, (bytes, bytearray, memoryview)):
             self.peer_id = bytes(peer_id)
         else:
-            raise TypeError(f"peer_id deve ser bytes ou str, obtido {type(peer_id).__name__}.")
+            raise TypeError(f"peer_id must be bytes or str, got {type(peer_id).__name__}.")
 
         self.port = port
         self.user_agent = user_agent
         self.opener = opener
 
-        # Estado da sessão com o tracker
+        # Tracker session state
         self.last_tracker_id: Optional[str] = None
         self.last_response: Optional[TrackerResponse] = None
 
@@ -703,11 +703,11 @@ class HTTPTrackerClient:
         tracker_url: Optional[str] = None,
     ) -> TrackerResponse:
         """
-        Executa um announce HTTP e retorna o TrackerResponse decodificado.
+        Execute an HTTP announce and return decoded TrackerResponse.
         """
         target_url = tracker_url or self.announce_url
         if not target_url:
-            raise ValueError("Nenhuma URL de announce informada ou configurada no cliente.")
+            raise ValueError("No announce URL provided or configured in client.")
 
         calc_left = left if left is not None else max(0, self.total_length - downloaded)
         effective_trackerid = trackerid if trackerid is not None else self.last_tracker_id
@@ -746,7 +746,7 @@ class HTTPTrackerClient:
         compact: bool = True,
         **kwargs: Any,
     ) -> TrackerResponse:
-        """Envia o announce inicial com event='started'."""
+        """Send initial announce with event='started'."""
         return self.announce(
             uploaded=uploaded,
             downloaded=downloaded,
@@ -763,7 +763,7 @@ class HTTPTrackerClient:
         compact: bool = True,
         **kwargs: Any,
     ) -> TrackerResponse:
-        """Envia o announce de conclusão com event='completed' e left=0."""
+        """Send completion announce with event='completed' and left=0."""
         down = downloaded if downloaded is not None else self.total_length
         return self.announce(
             uploaded=uploaded,
@@ -782,7 +782,7 @@ class HTTPTrackerClient:
         compact: bool = True,
         **kwargs: Any,
     ) -> TrackerResponse:
-        """Envia o announce de encerramento com event='stopped'."""
+        """Send termination announce with event='stopped'."""
         return self.announce(
             uploaded=uploaded,
             downloaded=downloaded,
@@ -791,3 +791,4 @@ class HTTPTrackerClient:
             compact=compact,
             **kwargs,
         )
+

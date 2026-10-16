@@ -1,5 +1,5 @@
 """
-Ponto de entrada raiz do Cliente BitTorrent Educacional em Python.
+Root entry point for the Educational BitTorrent Client in Python.
 """
 
 from src.cli import main

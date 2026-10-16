@@ -1,11 +1,11 @@
 """
-Módulo para a camada de protocolo de comunicação entre peers BitTorrent (Peer Wire Protocol).
+Module for the BitTorrent Peer Wire Protocol communication layer.
 
-Implementa a especificação BEP 0003:
-- Conexão TCP robusta com peers;
-- Montagem, envio e validação do Handshake de 68 bytes;
-- Enquadramento (framing) e buffering de mensagens por prefixo de tamanho de 4 bytes (big-endian);
-- Codificação e decodificação de todos os tipos de mensagens padrão:
+Implements the BEP 0003 specification:
+- Robust TCP connection with peers;
+- Assembly, transmission, and validation of the 68-byte Handshake;
+- Framing and message buffering using 4-byte big-endian length prefix;
+- Encoding and decoding of all standard message types:
   - Keep-Alive (len=0)
   - Choke (id=0)
   - Unchoke (id=1)
@@ -17,10 +17,10 @@ Implementa a especificação BEP 0003:
   - Piece (id=7)
   - Cancel (id=8)
   - Port (id=9, BEP 0005)
-- Suporte a leitura exata de N bytes com proteção contra fragmentação de rede;
-- Tratamento de múltiplas mensagens em uma única leitura (packet coalescing);
-- Proteção contra mensagens com tamanhos excessivos (Memory Exhaustion / DoS);
-- Gerenciador de conexão de alto nível `PeerConnection` com controle de estados (choking/interested).
+- Support for reading exactly N bytes with protection against network fragmentation;
+- Handling multiple messages in a single read (packet coalescing);
+- Protection against oversized messages (Memory Exhaustion / DoS);
+- High-level `PeerConnection` connection manager with state tracking (choking/interested).
 """
 
 import math
@@ -32,28 +32,28 @@ from typing import Any, List, Optional, Tuple, Union
 
 
 # ==============================================================================
-# Constantes do Protocolo
+# Protocol Constants
 # ==============================================================================
 
 HANDSHAKE_PSTR = b"BitTorrent protocol"
 HANDSHAKE_PSTRLEN = 19
 HANDSHAKE_LENGTH = 68  # 1 byte pstrlen + 19 bytes pstr + 8 bytes reserved + 20 bytes info_hash + 20 bytes peer_id
 
-# Tamanho padrão do bloco requisitado (16 KB)
+# Standard requested block size (16 KB)
 DEFAULT_BLOCK_SIZE = 16384
 
-# Limite máximo seguro para tamanho de bloco individual (128 KB)
+# Safe maximum limit for individual block size (128 KB)
 MAX_BLOCK_SIZE = 128 * 1024
 
-# Limite de segurança para tamanho de mensagens individuais (2 MB) para evitar estouro de memória
+# Security limit for individual message size (2 MB) to prevent memory exhaustion
 MAX_MESSAGE_LENGTH = 2 * 1024 * 1024
 
-# Limite máximo para o buffer de recepção interno de um peer (4 MB) contra ataques de exaustão de memória
+# Maximum limit for internal peer receive buffer (4 MB) against memory exhaustion attacks
 MAX_PEER_BUFFER_SIZE = 4 * 1024 * 1024
 
 
 class MessageID(IntEnum):
-    """Identificadores numéricos padrão de mensagens BitTorrent (BEP 0003)."""
+    """Standard numerical identifiers for BitTorrent messages (BEP 0003)."""
     CHOKE = 0
     UNCHOKE = 1
     INTERESTED = 2
@@ -67,52 +67,52 @@ class MessageID(IntEnum):
 
 
 # ==============================================================================
-# Exceções
+# Exceptions
 # ==============================================================================
 
 class PeerError(Exception):
-    """Exceção base para erros na camada de protocolo de peers."""
+    """Base exception for errors in the peer protocol layer."""
     pass
 
 
 class PeerConnectionError(PeerError):
-    """Falha de conexão com o peer remoto (recusa, erro de rede, etc.)."""
+    """Connection failure with remote peer (refused, network error, etc.)."""
     pass
 
 
 class PeerConnectionClosedError(PeerConnectionError):
-    """Conexão foi encerrada prematuramente pelo peer remoto (EOF recebido)."""
+    """Connection was prematurely closed by remote peer (EOF received)."""
     pass
 
 
 class PeerTimeoutError(PeerConnectionError):
-    """Tempo limite (timeout) excedido durante operação de conexão, envio ou leitura."""
+    """Timeout exceeded during connection, send, or receive operation."""
     pass
 
 
 class PeerProtocolError(PeerError):
-    """Violação das regras do protocolo BitTorrent (dados corrompidos, campos inválidos)."""
+    """Violation of BitTorrent protocol rules (corrupted data, invalid fields)."""
     pass
 
 
 class HandshakeError(PeerProtocolError):
-    """Falha na validação ou negociação do Handshake com o peer."""
+    """Handshake validation or negotiation failure with peer."""
     pass
 
 
 class MessageSizeError(PeerProtocolError):
-    """Mensagem excede o limite máximo permitido ou possui tamanho incompatível com seu tipo."""
+    """Message exceeds maximum allowed limit or has size incompatible with its type."""
     pass
 
 
 # ==============================================================================
-# Estrutura do Handshake
+# Handshake Structure
 # ==============================================================================
 
 @dataclass(frozen=True)
 class Handshake:
     """
-    Representação do handshake BitTorrent (68 bytes).
+    Representation of the BitTorrent handshake (68 bytes).
     """
     info_hash: bytes
     peer_id: bytes
@@ -121,16 +121,16 @@ class Handshake:
 
     def __post_init__(self):
         if not isinstance(self.info_hash, (bytes, bytearray)) or len(self.info_hash) != 20:
-            raise ValueError(f"info_hash deve ter exatamente 20 bytes, obtido {len(self.info_hash) if isinstance(self.info_hash, (bytes, bytearray)) else type(self.info_hash).__name__}.")
+            raise ValueError(f"info_hash must be exactly 20 bytes, got {len(self.info_hash) if isinstance(self.info_hash, (bytes, bytearray)) else type(self.info_hash).__name__}.")
         if not isinstance(self.peer_id, (bytes, bytearray)) or len(self.peer_id) != 20:
-            raise ValueError(f"peer_id deve ter exatamente 20 bytes, obtido {len(self.peer_id) if isinstance(self.peer_id, (bytes, bytearray)) else type(self.peer_id).__name__}.")
+            raise ValueError(f"peer_id must be exactly 20 bytes, got {len(self.peer_id) if isinstance(self.peer_id, (bytes, bytearray)) else type(self.peer_id).__name__}.")
         if not isinstance(self.reserved, (bytes, bytearray)) or len(self.reserved) != 8:
-            raise ValueError(f"reserved deve ter exatamente 8 bytes, obtido {len(self.reserved) if isinstance(self.reserved, (bytes, bytearray)) else type(self.reserved).__name__}.")
+            raise ValueError(f"reserved must be exactly 8 bytes, got {len(self.reserved) if isinstance(self.reserved, (bytes, bytearray)) else type(self.reserved).__name__}.")
         if self.pstr != HANDSHAKE_PSTR:
-            raise ValueError(f"pstr deve ser {HANDSHAKE_PSTR!r}, obtido {self.pstr!r}.")
+            raise ValueError(f"pstr must be {HANDSHAKE_PSTR!r}, got {self.pstr!r}.")
 
     def encode(self) -> bytes:
-        """Serializa o Handshake em seus 68 bytes binários."""
+        """Serialize Handshake into its 68 binary bytes."""
         return encode_handshake(
             info_hash=self.info_hash,
             peer_id=self.peer_id,
@@ -146,20 +146,20 @@ def encode_handshake(
     pstr: bytes = HANDSHAKE_PSTR,
 ) -> bytes:
     """
-    Monta os 68 bytes binários do Handshake BitTorrent.
-    Formato: <1 byte pstrlen><pstr><8 bytes reserved><20 bytes info_hash><20 bytes peer_id>
+    Assemble the 68 binary bytes of the BitTorrent Handshake.
+    Format: <1 byte pstrlen><pstr><8 bytes reserved><20 bytes info_hash><20 bytes peer_id>
     """
     if len(pstr) != HANDSHAKE_PSTRLEN:
-        raise ValueError(f"pstr deve ter {HANDSHAKE_PSTRLEN} bytes, obtido {len(pstr)}.")
+        raise ValueError(f"pstr must be {HANDSHAKE_PSTRLEN} bytes, got {len(pstr)}.")
     info_bytes = bytes(info_hash)
     if len(info_bytes) != 20:
-        raise ValueError(f"info_hash deve ter exatamente 20 bytes, obtido {len(info_bytes)} bytes.")
+        raise ValueError(f"info_hash must be exactly 20 bytes, got {len(info_bytes)} bytes.")
     peer_id_bytes = bytes(peer_id)
     if len(peer_id_bytes) != 20:
-        raise ValueError(f"peer_id deve ter exatamente 20 bytes, obtido {len(peer_id_bytes)} bytes.")
+        raise ValueError(f"peer_id must be exactly 20 bytes, got {len(peer_id_bytes)} bytes.")
     reserved_bytes = bytes(reserved)
     if len(reserved_bytes) != 8:
-        raise ValueError(f"reserved deve ter exatamente 8 bytes, obtido {len(reserved_bytes)} bytes.")
+        raise ValueError(f"reserved must be exactly 8 bytes, got {len(reserved_bytes)} bytes.")
 
     return struct.pack("!B", len(pstr)) + pstr + reserved_bytes + info_bytes + peer_id_bytes
 
@@ -170,27 +170,27 @@ def parse_handshake(
     expected_peer_id: Optional[Union[bytes, bytearray]] = None,
 ) -> Handshake:
     """
-    Decodifica e valida os 68 bytes recebidos de um Handshake.
+    Decode and validate the 68 bytes received from a Handshake.
 
     Raises:
-        HandshakeError: Se o tamanho, protocolo, info_hash ou peer_id forem inválidos.
+        HandshakeError: If length, protocol, info_hash, or peer_id are invalid.
     """
     raw = bytes(data)
     if len(raw) != HANDSHAKE_LENGTH:
         raise HandshakeError(
-            f"Tamanho do handshake inválido: esperado {HANDSHAKE_LENGTH} bytes, obtido {len(raw)} bytes."
+            f"Invalid handshake length: expected {HANDSHAKE_LENGTH} bytes, got {len(raw)} bytes."
         )
 
     pstrlen = raw[0]
     if pstrlen != HANDSHAKE_PSTRLEN:
         raise HandshakeError(
-            f"pstrlen inválido no handshake: esperado {HANDSHAKE_PSTRLEN}, obtido {pstrlen}."
+            f"Invalid pstrlen in handshake: expected {HANDSHAKE_PSTRLEN}, got {pstrlen}."
         )
 
     pstr = raw[1 : 1 + pstrlen]
     if pstr != HANDSHAKE_PSTR:
         raise HandshakeError(
-            f"Identificador de protocolo inválido no handshake: esperado {HANDSHAKE_PSTR!r}, obtido {pstr!r}."
+            f"Invalid protocol identifier in handshake: expected {HANDSHAKE_PSTR!r}, got {pstr!r}."
         )
 
     reserved = raw[1 + pstrlen : 1 + pstrlen + 8]
@@ -201,16 +201,16 @@ def parse_handshake(
         expected_hash_bytes = bytes(expected_info_hash)
         if info_hash != expected_hash_bytes:
             raise HandshakeError(
-                f"info_hash divergente no handshake do peer: "
-                f"esperado {expected_hash_bytes.hex()}, obtido {info_hash.hex()}."
+                f"info_hash mismatch in peer handshake: "
+                f"expected {expected_hash_bytes.hex()}, got {info_hash.hex()}."
             )
 
     if expected_peer_id is not None:
         expected_pid_bytes = bytes(expected_peer_id)
         if peer_id != expected_pid_bytes:
             raise HandshakeError(
-                f"peer_id divergente no handshake do peer: "
-                f"esperado {expected_pid_bytes.hex()}, obtido {peer_id.hex()}."
+                f"peer_id mismatch in peer handshake: "
+                f"expected {expected_pid_bytes.hex()}, got {peer_id.hex()}."
             )
 
     return Handshake(
@@ -222,20 +222,20 @@ def parse_handshake(
 
 
 # ==============================================================================
-# Estrutura Auxiliar Bitfield
+# Bitfield Helper Structure
 # ==============================================================================
 
 class Bitfield:
     """
-    Representação eficiente e manipulável do bitfield de peças BitTorrent (BEP 0003).
+    Efficient and manipulable representation of BitTorrent piece bitfield (BEP 0003).
 
-    Cada bit representa a posse de uma peça pelo peer (1 = presente, 0 = ausente).
-    O bit de ordem mais alta (0x80) no primeiro byte representa a peça de índice 0.
+    Each bit represents piece possession by the peer (1 = present, 0 = absent).
+    The highest-order bit (0x80) in the first byte represents piece index 0.
     """
 
     def __init__(self, num_pieces: int, initial_bytes: Optional[Union[bytes, bytearray]] = None):
         if num_pieces < 0:
-            raise ValueError(f"num_pieces não pode ser negativo: {num_pieces}")
+            raise ValueError(f"num_pieces cannot be negative: {num_pieces}")
         self.num_pieces = num_pieces
         expected_len = (num_pieces + 7) // 8
 
@@ -243,33 +243,33 @@ class Bitfield:
             raw = bytes(initial_bytes)
             if len(raw) != expected_len:
                 raise ValueError(
-                    f"Tamanho do bitfield ({len(raw)} bytes) incompatível com "
-                    f"num_pieces={num_pieces} (esperado {expected_len} bytes)."
+                    f"Bitfield size ({len(raw)} bytes) incompatible with "
+                    f"num_pieces={num_pieces} (expected {expected_len} bytes)."
                 )
-            # Validação estrita de bits sobressalentes (BEP 0003)
+            # Strict validation of spare bits (BEP 0003)
             spare_bits = (expected_len * 8) - num_pieces
             if spare_bits > 0 and len(raw) > 0:
                 mask = (1 << spare_bits) - 1
                 if raw[-1] & mask != 0:
                     raise PeerProtocolError(
-                        f"Bitfield inválido: bits sobressalentes não-nulos detectados no final do bitfield (spare_bits={spare_bits})."
+                        f"Invalid bitfield: non-zero spare bits detected at end of bitfield (spare_bits={spare_bits})."
                     )
             self._data = bytearray(raw)
         else:
             self._data = bytearray(expected_len)
 
     def has_piece(self, index: int) -> bool:
-        """Verifica se a peça no índice especificado está presente (True) ou ausente (False)."""
+        """Check whether piece at specified index is present (True) or absent (False)."""
         if not (0 <= index < self.num_pieces):
-            raise IndexError(f"Índice de peça fora do intervalo: {index} (total: {self.num_pieces})")
+            raise IndexError(f"Piece index out of range: {index} (total: {self.num_pieces})")
         byte_idx = index // 8
         bit_idx = 7 - (index % 8)
         return bool(self._data[byte_idx] & (1 << bit_idx))
 
     def set_piece(self, index: int, value: bool = True) -> None:
-        """Define o estado de posse da peça no índice informado."""
+        """Set possession status of piece at given index."""
         if not (0 <= index < self.num_pieces):
-            raise IndexError(f"Índice de peça fora do intervalo: {index} (total: {self.num_pieces})")
+            raise IndexError(f"Piece index out of range: {index} (total: {self.num_pieces})")
         byte_idx = index // 8
         bit_idx = 7 - (index % 8)
         if value:
@@ -278,27 +278,27 @@ class Bitfield:
             self._data[byte_idx] &= ~(1 << bit_idx)
 
     def count(self) -> int:
-        """Retorna a contagem total de peças presentes."""
+        """Return total count of present pieces."""
         return sum(1 for i in range(self.num_pieces) if self.has_piece(i))
 
     @property
     def is_complete(self) -> bool:
-        """Indica se todas as peças do torrent estão presentes (seeder)."""
+        """Indicate whether all pieces in the torrent are present (seeder)."""
         return self.count() == self.num_pieces
 
     def to_bytes(self) -> bytes:
-        """Retorna a representação em bytes do bitfield."""
+        """Return byte representation of the bitfield."""
         return bytes(self._data)
 
     @classmethod
     def from_bytes(cls, data: Union[bytes, bytearray], num_pieces: Optional[int] = None) -> "Bitfield":
-        """Constrói uma instância a partir de bytes brutos."""
+        """Construct instance from raw bytes."""
         raw = bytes(data)
         pieces_count = num_pieces if num_pieces is not None else len(raw) * 8
         return cls(num_pieces=pieces_count, initial_bytes=raw)
 
     def __repr__(self) -> str:
-        return f"<Bitfield: {self.count()}/{self.num_pieces} peças>"
+        return f"<Bitfield: {self.count()}/{self.num_pieces} pieces>"
 
     def __eq__(self, other: Any) -> bool:
         if not isinstance(other, Bitfield):
@@ -307,20 +307,20 @@ class Bitfield:
 
 
 # ==============================================================================
-# Mensagens do Peer Wire Protocol
+# Peer Wire Protocol Messages
 # ==============================================================================
 
 class PeerMessage:
-    """Classe base para todas as mensagens do Peer Protocol."""
+    """Base class for all Peer Protocol messages."""
 
     def encode(self) -> bytes:
-        """Serializa a mensagem completa com o prefixo de 4 bytes de tamanho."""
+        """Serialize complete message with 4-byte length prefix."""
         raise NotImplementedError
 
 
 @dataclass(frozen=True)
 class KeepAliveMessage(PeerMessage):
-    """Mensagem Keep-Alive: tamanho=0, sem ID e sem payload (4 bytes: 00 00 00 00)."""
+    """Keep-Alive message: length=0, no ID, no payload (4 bytes: 00 00 00 00)."""
     msg_id: Optional[int] = None
 
     def encode(self) -> bytes:
@@ -329,7 +329,7 @@ class KeepAliveMessage(PeerMessage):
 
 @dataclass(frozen=True)
 class ChokeMessage(PeerMessage):
-    """Mensagem Choke: ID=0, notifica que o remetente não atenderá requisições."""
+    """Choke message: ID=0, notifies that sender will not fulfill requests."""
     msg_id: Optional[int] = MessageID.CHOKE
 
     def encode(self) -> bytes:
@@ -338,7 +338,7 @@ class ChokeMessage(PeerMessage):
 
 @dataclass(frozen=True)
 class UnchokeMessage(PeerMessage):
-    """Mensagem Unchoke: ID=1, notifica que o remetente está pronto para atender requisições."""
+    """Unchoke message: ID=1, notifies that sender is ready to fulfill requests."""
     msg_id: Optional[int] = MessageID.UNCHOKE
 
     def encode(self) -> bytes:
@@ -347,7 +347,7 @@ class UnchokeMessage(PeerMessage):
 
 @dataclass(frozen=True)
 class InterestedMessage(PeerMessage):
-    """Mensagem Interested: ID=2, notifica interesse em baixar peças do peer."""
+    """Interested message: ID=2, notifies interest in downloading pieces from peer."""
     msg_id: Optional[int] = MessageID.INTERESTED
 
     def encode(self) -> bytes:
@@ -356,7 +356,7 @@ class InterestedMessage(PeerMessage):
 
 @dataclass(frozen=True)
 class NotInterestedMessage(PeerMessage):
-    """Mensagem Not Interested: ID=3, notifica falta de interesse nas peças do peer."""
+    """Not Interested message: ID=3, notifies lack of interest in peer pieces."""
     msg_id: Optional[int] = MessageID.NOT_INTERESTED
 
     def encode(self) -> bytes:
@@ -365,13 +365,13 @@ class NotInterestedMessage(PeerMessage):
 
 @dataclass(frozen=True)
 class HaveMessage(PeerMessage):
-    """Mensagem Have: ID=4, notifica que o peer baixou e validou com sucesso uma peça específica."""
+    """Have message: ID=4, notifies that peer successfully downloaded and verified a specific piece."""
     piece_index: int
     msg_id: Optional[int] = MessageID.HAVE
 
     def __post_init__(self):
         if not isinstance(self.piece_index, int) or isinstance(self.piece_index, bool) or self.piece_index < 0:
-            raise ValueError(f"piece_index deve ser inteiro não-negativo, obtido {self.piece_index!r}.")
+            raise ValueError(f"piece_index must be a non-negative integer, got {self.piece_index!r}.")
 
     def encode(self) -> bytes:
         return struct.pack("!IBI", 5, MessageID.HAVE, self.piece_index)
@@ -379,30 +379,30 @@ class HaveMessage(PeerMessage):
 
 @dataclass(frozen=True)
 class BitfieldMessage(PeerMessage):
-    """Mensagem Bitfield: ID=5, envia o mapa de peças possuídas pelo peer."""
+    """Bitfield message: ID=5, sends the map of pieces possessed by peer."""
     bitfield: bytes
     msg_id: Optional[int] = MessageID.BITFIELD
 
     def __post_init__(self):
         if not isinstance(self.bitfield, (bytes, bytearray)):
-            raise TypeError(f"bitfield deve ser bytes, obtido {type(self.bitfield).__name__}.")
+            raise TypeError(f"bitfield must be bytes, got {type(self.bitfield).__name__}.")
 
     def encode(self) -> bytes:
         raw = bytes(self.bitfield)
         return struct.pack("!IB", 1 + len(raw), MessageID.BITFIELD) + raw
 
     def to_bitfield(self, num_pieces: Optional[int] = None) -> Bitfield:
-        """Converte os bytes desta mensagem em uma instância manipulável de Bitfield."""
+        """Convert bytes of this message into a manipulable Bitfield instance."""
         return Bitfield.from_bytes(self.bitfield, num_pieces=num_pieces)
 
 
 @dataclass(frozen=True)
 class RequestMessage(PeerMessage):
     """
-    Mensagem Request: ID=6, requisita um bloco de dados de uma peça ao peer.
-    - index: índice da peça (uint32)
-    - begin: deslocamento em bytes dentro da peça (uint32)
-    - length: tamanho do bloco requisitado em bytes (uint32, tipicamente 16384)
+    Request message: ID=6, requests a data block of a piece from peer.
+    - index: piece index (uint32)
+    - begin: byte offset within piece (uint32)
+    - length: requested block size in bytes (uint32, typically 16384)
     """
     index: int
     begin: int
@@ -412,9 +412,9 @@ class RequestMessage(PeerMessage):
     def __post_init__(self):
         for name, val in [("index", self.index), ("begin", self.begin), ("length", self.length)]:
             if not isinstance(val, int) or isinstance(val, bool) or val < 0:
-                raise ValueError(f"{name} deve ser um inteiro não-negativo, obtido {val!r}.")
+                raise ValueError(f"{name} must be a non-negative integer, got {val!r}.")
         if self.length == 0:
-            raise ValueError("length do bloco requisitado não pode ser zero.")
+            raise ValueError("Requested block length cannot be zero.")
 
     def encode(self) -> bytes:
         return struct.pack("!IBIII", 13, MessageID.REQUEST, self.index, self.begin, self.length)
@@ -423,10 +423,10 @@ class RequestMessage(PeerMessage):
 @dataclass(frozen=True)
 class PieceMessage(PeerMessage):
     """
-    Mensagem Piece: ID=7, entrega um bloco de dados de uma peça requisitada.
-    - index: índice da peça (uint32)
-    - begin: deslocamento em bytes dentro da peça (uint32)
-    - block: conteúdo binário do bloco
+    Piece message: ID=7, delivers a data block of a requested piece.
+    - index: piece index (uint32)
+    - begin: byte offset within piece (uint32)
+    - block: binary content of block
     """
     index: int
     begin: int
@@ -436,9 +436,9 @@ class PieceMessage(PeerMessage):
     def __post_init__(self):
         for name, val in [("index", self.index), ("begin", self.begin)]:
             if not isinstance(val, int) or isinstance(val, bool) or val < 0:
-                raise ValueError(f"{name} deve ser um inteiro não-negativo, obtido {val!r}.")
+                raise ValueError(f"{name} must be a non-negative integer, got {val!r}.")
         if not isinstance(self.block, (bytes, bytearray)):
-            raise TypeError(f"block deve ser bytes, obtido {type(self.block).__name__}.")
+            raise TypeError(f"block must be bytes, got {type(self.block).__name__}.")
 
     def encode(self) -> bytes:
         raw_block = bytes(self.block)
@@ -448,7 +448,7 @@ class PieceMessage(PeerMessage):
 @dataclass(frozen=True)
 class CancelMessage(PeerMessage):
     """
-    Mensagem Cancel: ID=8, cancela uma requisição de bloco previamente enviada.
+    Cancel message: ID=8, cancels a previously sent block request.
     """
     index: int
     begin: int
@@ -458,9 +458,9 @@ class CancelMessage(PeerMessage):
     def __post_init__(self):
         for name, val in [("index", self.index), ("begin", self.begin), ("length", self.length)]:
             if not isinstance(val, int) or isinstance(val, bool) or val < 0:
-                raise ValueError(f"{name} deve ser um inteiro não-negativo, obtido {val!r}.")
+                raise ValueError(f"{name} must be a non-negative integer, got {val!r}.")
         if self.length == 0:
-            raise ValueError("length do cancel não pode ser zero.")
+            raise ValueError("Cancel length cannot be zero.")
 
     def encode(self) -> bytes:
         return struct.pack("!IBIII", 13, MessageID.CANCEL, self.index, self.begin, self.length)
@@ -469,14 +469,14 @@ class CancelMessage(PeerMessage):
 @dataclass(frozen=True)
 class PortMessage(PeerMessage):
     """
-    Mensagem Port (BEP 0005): ID=9, indica a porta de escuta da DHT UDP do peer.
+    Port message (BEP 0005): ID=9, specifies listening port of peer's UDP DHT.
     """
     listen_port: int
     msg_id: Optional[int] = MessageID.PORT
 
     def __post_init__(self):
         if not isinstance(self.listen_port, int) or isinstance(self.listen_port, bool) or not (0 < self.listen_port <= 65535):
-            raise ValueError(f"listen_port deve ser entre 1 e 65535, obtido {self.listen_port!r}.")
+            raise ValueError(f"listen_port must be between 1 and 65535, got {self.listen_port!r}.")
 
     def encode(self) -> bytes:
         return struct.pack("!IBH", 3, MessageID.PORT, self.listen_port)
@@ -484,7 +484,7 @@ class PortMessage(PeerMessage):
 
 @dataclass(frozen=True)
 class UnknownMessage(PeerMessage):
-    """Representação de mensagem com ID desconhecido para extensão futura."""
+    """Representation of message with unknown ID for future extensions."""
     msg_id: Optional[int]
     payload: bytes
 
@@ -495,90 +495,90 @@ class UnknownMessage(PeerMessage):
 
 
 # ==============================================================================
-# Construtores Rápidos e Encoders
+# Fast Constructors and Encoders
 # ==============================================================================
 
 def encode_keep_alive() -> bytes:
-    """Retorna os bytes da mensagem Keep-Alive (4 bytes zerados)."""
+    """Return bytes of Keep-Alive message (4 zero bytes)."""
     return KeepAliveMessage().encode()
 
 
 def encode_choke() -> bytes:
-    """Retorna os bytes da mensagem Choke."""
+    """Return bytes of Choke message."""
     return ChokeMessage().encode()
 
 
 def encode_unchoke() -> bytes:
-    """Retorna os bytes da mensagem Unchoke."""
+    """Return bytes of Unchoke message."""
     return UnchokeMessage().encode()
 
 
 def encode_interested() -> bytes:
-    """Retorna os bytes da mensagem Interested."""
+    """Return bytes of Interested message."""
     return InterestedMessage().encode()
 
 
 def encode_not_interested() -> bytes:
-    """Retorna os bytes da mensagem Not Interested."""
+    """Return bytes of Not Interested message."""
     return NotInterestedMessage().encode()
 
 
 def encode_have(piece_index: int) -> bytes:
-    """Retorna os bytes da mensagem Have para o índice informado."""
+    """Return bytes of Have message for given index."""
     return HaveMessage(piece_index=piece_index).encode()
 
 
 def encode_bitfield(bitfield: Union[bytes, bytearray, Bitfield]) -> bytes:
-    """Retorna os bytes da mensagem Bitfield."""
+    """Return bytes of Bitfield message."""
     raw = bitfield.to_bytes() if isinstance(bitfield, Bitfield) else bytes(bitfield)
     return BitfieldMessage(bitfield=raw).encode()
 
 
 def encode_request(index: int, begin: int, length: int) -> bytes:
-    """Retorna os bytes da mensagem Request."""
+    """Return bytes of Request message."""
     return RequestMessage(index=index, begin=begin, length=length).encode()
 
 
 def encode_piece(index: int, begin: int, block: Union[bytes, bytearray]) -> bytes:
-    """Retorna os bytes da mensagem Piece."""
+    """Return bytes of Piece message."""
     return PieceMessage(index=index, begin=begin, block=bytes(block)).encode()
 
 
 def encode_cancel(index: int, begin: int, length: int) -> bytes:
-    """Retorna os bytes da mensagem Cancel."""
+    """Return bytes of Cancel message."""
     return CancelMessage(index=index, begin=begin, length=length).encode()
 
 
 def encode_port(listen_port: int) -> bytes:
-    """Retorna os bytes da mensagem Port."""
+    """Return bytes of Port message."""
     return PortMessage(listen_port=listen_port).encode()
 
 
 def encode_message(msg: PeerMessage) -> bytes:
-    """Serializa qualquer objeto PeerMessage em seu formato binário."""
+    """Serialize any PeerMessage object into its binary format."""
     if not isinstance(msg, PeerMessage):
-        raise TypeError(f"Esperado PeerMessage, obtido {type(msg).__name__}.")
+        raise TypeError(f"Expected PeerMessage, got {type(msg).__name__}.")
     return msg.encode()
 
 
 # ==============================================================================
-# Parsers de Mensagens
+# Message Parsers
 # ==============================================================================
 
 def parse_message_payload(length: int, payload: bytes) -> PeerMessage:
     """
-    Decodifica o conteúdo de uma mensagem a partir do seu prefixo de tamanho e payload.
+    Decode message content from its length prefix and payload.
 
     Args:
-        length: Valor inteiro do prefixo de 4 bytes (tamanho de ID + dados).
-        payload: Bytes exatamente correspondentes a `length` (contendo ID + dados).
+        length: Integer value of 4-byte prefix (length of ID + data).
+        payload: Bytes exactly corresponding to `length` (containing ID + data).
 
     Raises:
-        PeerProtocolError / MessageSizeError: Se a mensagem estiver truncada ou malformada.
+        PeerProtocolError / MessageSizeError: If message is truncated or malformed.
     """
     if len(payload) != length:
         raise PeerProtocolError(
-            f"Tamanho do payload ({len(payload)} bytes) diverge do length prefix ({length} bytes)."
+            f"Payload length ({len(payload)} bytes) differs from length prefix ({length} bytes)."
         )
 
     if length == 0:
@@ -589,69 +589,69 @@ def parse_message_payload(length: int, payload: bytes) -> PeerMessage:
 
     if msg_id == MessageID.CHOKE:
         if length != 1:
-            raise MessageSizeError(f"Mensagem Choke deve ter length=1, obtido {length}.")
+            raise MessageSizeError(f"Choke message must have length=1, got {length}.")
         return ChokeMessage()
 
     elif msg_id == MessageID.UNCHOKE:
         if length != 1:
-            raise MessageSizeError(f"Mensagem Unchoke deve ter length=1, obtido {length}.")
+            raise MessageSizeError(f"Unchoke message must have length=1, got {length}.")
         return UnchokeMessage()
 
     elif msg_id == MessageID.INTERESTED:
         if length != 1:
-            raise MessageSizeError(f"Mensagem Interested deve ter length=1, obtido {length}.")
+            raise MessageSizeError(f"Interested message must have length=1, got {length}.")
         return InterestedMessage()
 
     elif msg_id == MessageID.NOT_INTERESTED:
         if length != 1:
-            raise MessageSizeError(f"Mensagem Not Interested deve ter length=1, obtido {length}.")
+            raise MessageSizeError(f"Not Interested message must have length=1, got {length}.")
         return NotInterestedMessage()
 
     elif msg_id == MessageID.HAVE:
         if length != 5 or len(data) != 4:
-            raise MessageSizeError(f"Mensagem Have deve ter length=5 (4 bytes de índice), obtido {length}.")
+            raise MessageSizeError(f"Have message must have length=5 (4 index bytes), got {length}.")
         piece_index = struct.unpack("!I", data)[0]
         return HaveMessage(piece_index=piece_index)
 
     elif msg_id == MessageID.BITFIELD:
         if length < 1:
-            raise MessageSizeError(f"Mensagem Bitfield com tamanho inválido: {length}.")
+            raise MessageSizeError(f"Bitfield message with invalid length: {length}.")
         return BitfieldMessage(bitfield=data)
 
     elif msg_id == MessageID.REQUEST:
         if length != 13 or len(data) != 12:
-            raise MessageSizeError(f"Mensagem Request deve ter length=13 (12 bytes de payload), obtido {length}.")
+            raise MessageSizeError(f"Request message must have length=13 (12-byte payload), got {length}.")
         index, begin, block_length = struct.unpack("!III", data)
         if block_length > MAX_BLOCK_SIZE:
             raise MessageSizeError(
-                f"Tamanho do bloco solicitado ({block_length} bytes) excede o limite máximo ({MAX_BLOCK_SIZE} bytes)."
+                f"Requested block length ({block_length} bytes) exceeds maximum limit ({MAX_BLOCK_SIZE} bytes)."
             )
         return RequestMessage(index=index, begin=begin, length=block_length)
 
     elif msg_id == MessageID.PIECE:
         if length < 9 or len(data) < 8:
-            raise MessageSizeError(f"Mensagem Piece deve ter length >= 9, obtido {length}.")
+            raise MessageSizeError(f"Piece message must have length >= 9, got {length}.")
         index, begin = struct.unpack("!II", data[:8])
         block = data[8:]
         if len(block) > MAX_BLOCK_SIZE:
             raise MessageSizeError(
-                f"Tamanho do bloco recebido ({len(block)} bytes) excede o limite máximo ({MAX_BLOCK_SIZE} bytes)."
+                f"Received block length ({len(block)} bytes) exceeds maximum limit ({MAX_BLOCK_SIZE} bytes)."
             )
         return PieceMessage(index=index, begin=begin, block=block)
 
     elif msg_id == MessageID.CANCEL:
         if length != 13 or len(data) != 12:
-            raise MessageSizeError(f"Mensagem Cancel deve ter length=13 (12 bytes de payload), obtido {length}.")
+            raise MessageSizeError(f"Cancel message must have length=13 (12-byte payload), got {length}.")
         index, begin, block_length = struct.unpack("!III", data)
         if block_length > MAX_BLOCK_SIZE:
             raise MessageSizeError(
-                f"Tamanho do bloco no Cancel ({block_length} bytes) excede o limite máximo ({MAX_BLOCK_SIZE} bytes)."
+                f"Block length in Cancel ({block_length} bytes) exceeds maximum limit ({MAX_BLOCK_SIZE} bytes)."
             )
         return CancelMessage(index=index, begin=begin, length=block_length)
 
     elif msg_id == MessageID.PORT:
         if length != 3 or len(data) != 2:
-            raise MessageSizeError(f"Mensagem Port deve ter length=3 (2 bytes de payload), obtido {length}.")
+            raise MessageSizeError(f"Port message must have length=3 (2-byte payload), got {length}.")
         port = struct.unpack("!H", data)[0]
         return PortMessage(listen_port=port)
 
@@ -661,19 +661,19 @@ def parse_message_payload(length: int, payload: bytes) -> PeerMessage:
 
 def parse_message(raw_msg_bytes: Union[bytes, bytearray, memoryview]) -> PeerMessage:
     """
-    Decodifica uma mensagem serializada completa a partir do seu buffer bruto
-    (incluindo o prefixo de 4 bytes de tamanho).
+    Decode a complete serialized message from its raw buffer
+    (including the 4-byte length prefix).
     """
     raw = bytes(raw_msg_bytes)
     if len(raw) < 4:
-        raise PeerProtocolError(f"Buffer insuficiente ({len(raw)} bytes) para conter o length prefix de 4 bytes.")
+        raise PeerProtocolError(f"Insufficient buffer ({len(raw)} bytes) to contain 4-byte length prefix.")
 
     length = struct.unpack("!I", raw[:4])[0]
     payload = raw[4:]
 
     if len(payload) != length:
         raise PeerProtocolError(
-            f"Tamanho do payload recebido ({len(payload)} bytes) diverge do prefixo de tamanho ({length} bytes)."
+            f"Received payload length ({len(payload)} bytes) differs from length prefix ({length} bytes)."
         )
 
     return parse_message_payload(length, payload)
@@ -684,8 +684,8 @@ def parse_messages_from_buffer(
     max_message_length: int = MAX_MESSAGE_LENGTH,
 ) -> List[PeerMessage]:
     """
-    Consome e decodifica todas as mensagens completas contidas no buffer mutável fornecido.
-    Mensagens parciais ou incompletas são preservadas no buffer para leitura posterior.
+    Consume and decode all complete messages contained in the provided mutable buffer.
+    Partial or incomplete messages are preserved in the buffer for subsequent reads.
     """
     messages: List[PeerMessage] = []
 
@@ -694,12 +694,12 @@ def parse_messages_from_buffer(
 
         if length > max_message_length:
             raise MessageSizeError(
-                f"Tamanho de mensagem {length} bytes excede o limite permitido ({max_message_length} bytes)."
+                f"Message length {length} bytes exceeds allowed limit ({max_message_length} bytes)."
             )
 
         total_needed = 4 + length
         if len(buffer) < total_needed:
-            # Mensagem incompleta, aguarda mais dados
+            # Incomplete message, wait for more data
             break
 
         msg_chunk = bytes(buffer[:total_needed])
@@ -710,21 +710,21 @@ def parse_messages_from_buffer(
 
 
 # ==============================================================================
-# Gerenciador de Conexão TCP (PeerConnection)
+# TCP Connection Manager (PeerConnection)
 # ==============================================================================
 
 class PeerConnection:
     """
-    Gerenciador robusto de conexão TCP de baixo e médio nível com um peer BitTorrent.
+    Robust low- and mid-level TCP connection manager for a BitTorrent peer.
 
-    Recursos:
-    - Leitura precisa de exatamente N bytes (`recv_exact`) com buffer interno;
-    - Proteção contra fragmentação TCP e absorção de múltiplas mensagens por leitura;
-    - Handshake completo com envio e validação estrita;
-    - Leitura estruturada de mensagens com verificação de limites máximos;
-    - Envio seguro de mensagens (`send_exact`, `send_message`);
-    - Rastreamento dos estados do protocolo (choking e interested de ambos os lados);
-    - Suporte a context manager (`with PeerConnection(...)`).
+    Features:
+    - Precise reading of exactly N bytes (`recv_exact`) with internal buffering;
+    - TCP fragmentation protection and absorption of multiple messages per read;
+    - Complete handshake negotiation with sending and strict validation;
+    - Structured reading of messages with maximum limit checks;
+    - Safe message sending (`send_exact`, `send_message`);
+    - Protocol state tracking (choking and interested flags on both ends);
+    - Context manager support (`with PeerConnection(...)`).
     """
 
     def __init__(
@@ -743,7 +743,7 @@ class PeerConnection:
         self._buffer = bytearray()
         self.peer_handshake: Optional[Handshake] = None
 
-        # Estados de controle do protocolo (BEP 0003)
+        # Protocol control states (BEP 0003)
         self.am_choking: bool = True
         self.am_interested: bool = False
         self.peer_choking: bool = True
@@ -755,7 +755,7 @@ class PeerConnection:
 
     @property
     def is_connected(self) -> bool:
-        """Verifica se o socket está instanciado."""
+        """Check whether socket is instantiated."""
         return self._sock is not None
 
     def connect(
@@ -765,7 +765,7 @@ class PeerConnection:
         timeout: Optional[float] = None,
     ) -> None:
         """
-        Estabelece a conexão TCP com o peer remoto.
+        Establish TCP connection with remote peer.
         """
         if host is not None:
             self.peer_host = host
@@ -773,7 +773,7 @@ class PeerConnection:
             self.peer_port = port
 
         if not self.peer_host or not self.peer_port:
-            raise ValueError("Host e porta do peer são obrigatórios para estabelecer a conexão.")
+            raise ValueError("Peer host and port are required to establish connection.")
 
         connect_timeout = timeout if timeout is not None else self.default_timeout
         try:
@@ -781,20 +781,20 @@ class PeerConnection:
                 (self.peer_host, self.peer_port),
                 timeout=connect_timeout,
             )
-            # Desativa o algoritmo de Nagle para envio imediato de mensagens curtas
+            # Disable Nagle algorithm for immediate sending of short messages
             self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self._sock.settimeout(self.default_timeout)
         except (socket.timeout, TimeoutError) as e:
             raise PeerTimeoutError(
-                f"Timeout ao conectar ao peer {self.peer_host}:{self.peer_port} após {connect_timeout}s."
+                f"Timeout connecting to peer {self.peer_host}:{self.peer_port} after {connect_timeout}s."
             ) from e
         except socket.error as e:
             raise PeerConnectionError(
-                f"Falha ao conectar ao peer {self.peer_host}:{self.peer_port}: {e}"
+                f"Failed to connect to peer {self.peer_host}:{self.peer_port}: {e}"
             ) from e
 
     def close(self) -> None:
-        """Fecha o socket e limpa o buffer interno."""
+        """Close socket and clear internal buffer."""
         if self._sock is not None:
             try:
                 self._sock.shutdown(socket.SHUT_RDWR)
@@ -815,28 +815,28 @@ class PeerConnection:
 
     def recv_exact(self, n: int, timeout: Optional[float] = None) -> bytes:
         """
-        Lê exatamente N bytes da conexão ou do buffer interno.
+        Read exactly N bytes from connection or internal buffer.
 
-        Bloqueia de maneira robusta até que todos os N bytes tenham sido acumulados.
+        Robustly blocks until all N bytes have accumulated.
 
         Raises:
-            PeerConnectionError: Se o socket não estiver conectado.
-            PeerConnectionClosedError: Se a conexão for fechada antes de receber N bytes.
-            PeerTimeoutError: Se o tempo limite de leitura for atingido.
+            PeerConnectionError: If socket is not connected.
+            PeerConnectionClosedError: If connection is closed before receiving N bytes.
+            PeerTimeoutError: If read timeout is reached.
         """
         if n < 0:
-            raise ValueError(f"Quantidade de bytes não pode ser negativa: {n}")
+            raise ValueError(f"Byte count cannot be negative: {n}")
         if n == 0:
             return b""
 
-        # Se já temos os bytes no buffer interno, extrai imediatamente
+        # If bytes are already in internal buffer, extract immediately
         if len(self._buffer) >= n:
             chunk = bytes(self._buffer[:n])
             del self._buffer[:n]
             return chunk
 
         if self._sock is None:
-            raise PeerConnectionError("Socket não conectado.")
+            raise PeerConnectionError("Socket not connected.")
 
         effective_timeout = timeout if timeout is not None else self.default_timeout
         old_timeout = self._sock.gettimeout()
@@ -850,23 +850,23 @@ class PeerConnection:
                     data = self._sock.recv(read_size)
                 except (socket.timeout, TimeoutError) as e:
                     raise PeerTimeoutError(
-                        f"Timeout aguardando {needed} bytes do peer ({self.peer_host}:{self.peer_port})."
+                        f"Timeout waiting for {needed} bytes from peer ({self.peer_host}:{self.peer_port})."
                     ) from e
                 except socket.error as e:
                     raise PeerConnectionError(
-                        f"Erro de socket ao receber dados do peer: {e}"
+                        f"Socket error receiving data from peer: {e}"
                     ) from e
 
                 if not data:
                     raise PeerConnectionClosedError(
-                        f"Conexão fechada pelo peer ({self.peer_host}:{self.peer_port}) antes de receber {n} bytes "
-                        f"(obtido {len(self._buffer)} bytes, faltavam {needed} bytes)."
+                        f"Connection closed by peer ({self.peer_host}:{self.peer_port}) before receiving {n} bytes "
+                        f"(got {len(self._buffer)} bytes, missing {needed} bytes)."
                     )
 
                 self._buffer.extend(data)
                 if len(self._buffer) > MAX_PEER_BUFFER_SIZE:
                     raise MessageSizeError(
-                        f"Buffer de recepção do peer ({self.peer_host}:{self.peer_port}) excedeu o limite máximo seguro ({MAX_PEER_BUFFER_SIZE} bytes)."
+                        f"Peer receive buffer ({self.peer_host}:{self.peer_port}) exceeded maximum safe limit ({MAX_PEER_BUFFER_SIZE} bytes)."
                     )
 
             chunk = bytes(self._buffer[:n])
@@ -882,14 +882,14 @@ class PeerConnection:
 
     def send_exact(self, data: Union[bytes, bytearray, memoryview]) -> None:
         """
-        Envia exatamente todos os bytes fornecidos através do socket.
+        Send exactly all provided bytes through the socket.
 
         Raises:
-            PeerConnectionError: Se o socket não estiver conectado ou ocorrer erro de rede.
-            PeerTimeoutError: Se o timeout de escrita for atingido.
+            PeerConnectionError: If socket is not connected or network error occurs.
+            PeerTimeoutError: If write timeout is reached.
         """
         if self._sock is None:
-            raise PeerConnectionError("Socket não conectado.")
+            raise PeerConnectionError("Socket not connected.")
 
         data_bytes = bytes(data)
         if not data_bytes:
@@ -899,11 +899,11 @@ class PeerConnection:
             self._sock.sendall(data_bytes)
         except (socket.timeout, TimeoutError) as e:
             raise PeerTimeoutError(
-                f"Timeout ao enviar {len(data_bytes)} bytes para o peer ({self.peer_host}:{self.peer_port})."
+                f"Timeout sending {len(data_bytes)} bytes to peer ({self.peer_host}:{self.peer_port})."
             ) from e
         except socket.error as e:
             raise PeerConnectionError(
-                f"Erro ao enviar dados para o peer ({self.peer_host}:{self.peer_port}): {e}"
+                f"Error sending data to peer ({self.peer_host}:{self.peer_port}): {e}"
             ) from e
 
     def perform_handshake(
@@ -915,10 +915,10 @@ class PeerConnection:
         timeout: Optional[float] = None,
     ) -> Handshake:
         """
-        Executa a negociação de Handshake completa:
-        1. Envia o handshake de 68 bytes deste cliente;
-        2. Lê exatamente os 68 bytes do handshake de resposta do peer;
-        3. Valida pstrlen, pstr e info_hash (e opcionalmente peer_id).
+        Perform complete Handshake negotiation:
+        1. Sends 68-byte handshake from this client;
+        2. Reads exactly 68 bytes from peer response handshake;
+        3. Validates pstrlen, pstr, and info_hash (and optionally peer_id).
         """
         outbound = encode_handshake(
             info_hash=info_hash,
@@ -942,19 +942,19 @@ class PeerConnection:
         timeout: Optional[float] = None,
     ) -> PeerMessage:
         """
-        Lê e decodifica a próxima mensagem BitTorrent do stream.
+        Read and decode next BitTorrent message from stream.
 
-        1. Lê o prefixo de 4 bytes do tamanho;
-        2. Valida o limite de segurança contra mensagens excessivas;
-        3. Lê exatamente o payload de tamanho `length`;
-        4. Decodifica a mensagem e atualiza o estado interno da conexão.
+        1. Reads 4-byte length prefix;
+        2. Validates safety limit against oversized messages;
+        3. Reads exactly `length` payload bytes;
+        4. Decodes message and updates internal connection state.
         """
         len_bytes = self.recv_exact(4, timeout=timeout)
         length = struct.unpack("!I", len_bytes)[0]
 
         if length > max_message_length:
             raise MessageSizeError(
-                f"Tamanho de mensagem {length} bytes excede o limite permitido ({max_message_length} bytes)."
+                f"Message length {length} bytes exceeds allowed limit ({max_message_length} bytes)."
             )
 
         if length == 0:
@@ -963,13 +963,13 @@ class PeerConnection:
         payload = self.recv_exact(length, timeout=timeout)
         msg = parse_message_payload(length, payload)
 
-        # Atualiza os estados locais automaticamente com base na mensagem recebida
+        # Automatically update local states based on received message
         self._update_state_from_received_message(msg)
 
         return msg
 
     def _update_state_from_received_message(self, msg: PeerMessage) -> None:
-        """Atualiza flags de controle a partir de uma mensagem recebida do peer."""
+        """Update control flags from a message received from peer."""
         if isinstance(msg, ChokeMessage):
             self.peer_choking = True
         elif isinstance(msg, UnchokeMessage):
@@ -986,11 +986,11 @@ class PeerConnection:
 
     def send_message(self, msg: PeerMessage) -> None:
         """
-        Serializa e envia uma mensagem BitTorrent ao peer, atualizando estados locais.
+        Serialize and send a BitTorrent message to peer, updating local states.
         """
         self.send_exact(msg.encode())
 
-        # Atualiza os estados locais com base na mensagem enviada
+        # Update local states based on sent message
         if isinstance(msg, ChokeMessage):
             self.am_choking = True
         elif isinstance(msg, UnchokeMessage):
@@ -1001,46 +1001,47 @@ class PeerConnection:
             self.am_interested = False
 
     # --------------------------------------------------------------------------
-    # Métodos de Conveniência para Envio de Mensagens
+    # Convenience Methods for Sending Messages
     # --------------------------------------------------------------------------
 
     def send_choke(self) -> None:
-        """Envia mensagem Choke."""
+        """Send Choke message."""
         self.send_message(ChokeMessage())
 
     def send_unchoke(self) -> None:
-        """Envia mensagem Unchoke."""
+        """Send Unchoke message."""
         self.send_message(UnchokeMessage())
 
     def send_interested(self) -> None:
-        """Envia mensagem Interested."""
+        """Send Interested message."""
         self.send_message(InterestedMessage())
 
     def send_not_interested(self) -> None:
-        """Envia mensagem Not Interested."""
+        """Send Not Interested message."""
         self.send_message(NotInterestedMessage())
 
     def send_have(self, piece_index: int) -> None:
-        """Envia mensagem Have com o índice da peça."""
+        """Send Have message with piece index."""
         self.send_message(HaveMessage(piece_index=piece_index))
 
     def send_bitfield(self, bitfield: Union[bytes, bytearray, Bitfield]) -> None:
-        """Envia mensagem Bitfield."""
+        """Send Bitfield message."""
         raw = bitfield.to_bytes() if isinstance(bitfield, Bitfield) else bytes(bitfield)
         self.send_message(BitfieldMessage(bitfield=raw))
 
     def send_request(self, index: int, begin: int, length: int = DEFAULT_BLOCK_SIZE) -> None:
-        """Envia mensagem Request de um bloco."""
+        """Send Request message for a block."""
         self.send_message(RequestMessage(index=index, begin=begin, length=length))
 
     def send_piece(self, index: int, begin: int, block: Union[bytes, bytearray]) -> None:
-        """Envia mensagem Piece com um bloco de dados."""
+        """Send Piece message with a data block."""
         self.send_message(PieceMessage(index=index, begin=begin, block=bytes(block)))
 
     def send_cancel(self, index: int, begin: int, length: int = DEFAULT_BLOCK_SIZE) -> None:
-        """Envia mensagem Cancel de uma requisição de bloco."""
+        """Send Cancel message for a block request."""
         self.send_message(CancelMessage(index=index, begin=begin, length=length))
 
     def send_keep_alive(self) -> None:
-        """Envia mensagem Keep-Alive."""
+        """Send Keep-Alive message."""
         self.send_message(KeepAliveMessage())
+
