@@ -1,20 +1,20 @@
 """
-Suíte Completa de Testes de Integração de Ponta a Ponta para o Simple BitTorrent Client.
+Complete End-to-End Integration Test Suite for Simple BitTorrent Client.
 
-Testa o pipeline completo sem depender de trackers ou peers públicos na Internet:
+Tests the full pipeline without relying on public Internet trackers or peers:
 .torrent
   -> parser (TorrentMetadata)
-  -> cálculo do info_hash
-  -> consulta e anúncio ao tracker HTTP local
-  -> descoberta de peers
-  -> handshake TCP de 68 bytes
-  -> troca de bitfield / have
-  -> gerenciamento de unchoke / interested
-  -> envio de requests em voo (pipelining)
-  -> recepção de blocos (PieceMessage)
-  -> validação rigorosa de integridade SHA-1 por peça
-  -> resiliência contra peças corrompidas e desconexões
-  -> reconstrução dos arquivos finais (single-file e multi-file).
+  -> info_hash calculation
+  -> local HTTP tracker query and announce
+  -> peer discovery
+  -> 68-byte TCP handshake
+  -> bitfield / have exchange
+  -> unchoke / interested management
+  -> in-flight request pipelining
+  -> block reception (PieceMessage)
+  -> strict per-piece SHA-1 integrity validation
+  -> resilience against corrupted pieces and disconnects
+  -> final file reconstruction (single-file and multi-file).
 """
 
 import dataclasses
@@ -54,20 +54,20 @@ class TestFullPipelineIntegration(unittest.TestCase):
 
     def test_e2e_single_file_complete_download_flow(self):
         """
-        Testa o fluxo integral de download para um arquivo único (single-file):
-        1. Criação e parsing do .torrent a partir de arquivo físico;
-        2. Tracker HTTP local anunciando início e registrando estatísticas;
-        3. Peer TCP local efetuando handshake, bitfield e unchoke;
-        4. Pipelining de requisições e recepção de blocos;
-        5. Validação de SHA-1 em todas as peças;
-        6. Gravação em disco e validação byte a byte do arquivo salvo;
-        7. Anúncio final de 'completed' no tracker.
+        Tests complete download flow for a single-file torrent:
+        1. Creation and parsing of .torrent from physical file;
+        2. Local HTTP tracker announcing start and recording statistics;
+        3. Local TCP peer performing handshake, bitfield, and unchoke;
+        4. Request pipelining and block reception;
+        5. SHA-1 validation on all pieces;
+        6. Saving to disk and byte-by-byte validation of saved file;
+        7. Final 'completed' announce to tracker.
         """
         file_size = 48 * 1024  # 48 KB
-        piece_length = 16 * 1024  # 16 KB (3 peças)
+        piece_length = 16 * 1024  # 16 KB (3 pieces)
 
         with SimulatedSwarm() as swarm:
-            # 1. Cria fixture com a URL do tracker local
+            # 1. Create fixture with local tracker URL
             fixture = TorrentFixtureBuilder.create_single_file_torrent(
                 filename="ubuntu_test_iso.iso",
                 file_size=file_size,
@@ -76,10 +76,10 @@ class TestFullPipelineIntegration(unittest.TestCase):
             )
             swarm.set_fixture(fixture)
 
-            # 2. Cria um Peer com 100% das peças
+            # 2. Create a Peer with 100% of pieces
             peer = swarm.spawn_peer(PeerBehavior(peer_id=b"-ST0001-goodpeer0001"))
 
-            # 3. Configura diretório de saída
+            # 3. Configure output directory
             with tempfile.TemporaryDirectory() as out_dir:
                 out_path = Path(out_dir)
                 target_file = out_path / "ubuntu_test_iso.iso"
@@ -89,7 +89,7 @@ class TestFullPipelineIntegration(unittest.TestCase):
                 def track_progress(p: DownloadProgress):
                     progress_snapshots.append(p)
 
-                # 4. Instancia o cliente BitTorrent apontando para o arquivo .torrent em disco
+                # 4. Instantiate BitTorrent client pointing to .torrent file on disk
                 client = TorrentClient(
                     torrent=fixture.torrent_file_path,
                     output_path=out_path,
@@ -97,19 +97,19 @@ class TestFullPipelineIntegration(unittest.TestCase):
                     tracker_timeout=3.0,
                 )
 
-                # 5. Executa o download de ponta a ponta
+                # 5. Execute end-to-end download
                 downloaded_data = client.download(on_progress=track_progress)
 
-                # 6. Validações
-                # A. Dados retornados em memória coincidem exatamente com o original
+                # 6. Validations
+                # A. Returned in-memory data matches original exactly
                 self.assertEqual(downloaded_data, fixture.total_data)
                 self.assertEqual(len(downloaded_data), file_size)
 
-                # B. Arquivo gravado em disco confere byte a byte
+                # B. File written to disk matches byte-for-byte
                 self.assertTrue(target_file.exists())
                 self.assertEqual(target_file.read_bytes(), fixture.total_data)
 
-                # C. Valida progresso
+                # C. Validate progress
                 self.assertTrue(client.piece_manager.is_complete)
                 self.assertEqual(client.piece_manager.completed_pieces_count(), 3)
                 self.assertEqual(client.piece_manager.bytes_downloaded(), file_size)
@@ -117,7 +117,7 @@ class TestFullPipelineIntegration(unittest.TestCase):
                 self.assertTrue(len(progress_snapshots) > 0)
                 self.assertTrue(progress_snapshots[-1].is_complete)
 
-                # D. Valida estatísticas registradas pelo Tracker HTTP
+                # D. Validate statistics recorded by HTTP Tracker
                 announces = swarm.tracker.get_announces()
                 self.assertTrue(len(announces) >= 2)
                 started_event = [a for a in announces if a.event == "started"]
@@ -127,16 +127,16 @@ class TestFullPipelineIntegration(unittest.TestCase):
                 self.assertEqual(started_event[0].info_hash, fixture.info_hash)
                 self.assertEqual(completed_event[0].downloaded, file_size)
 
-                # E. Valida que o peer atendeu todos os blocos
+                # E. Validate peer served all blocks
                 self.assertEqual(peer.blocks_served, 3)
                 self.assertIn("InterestedMessage", peer.received_messages)
                 self.assertIn("RequestMessage", peer.received_messages)
 
     def test_e2e_multi_file_download_and_directory_tree_reconstruction(self):
         """
-        Testa o fluxo completo para torrents multi-file com múltiplos arquivos e pastas aninhadas:
-        - Verifica integridade dos dados através das fronteiras de peças e arquivos;
-        - Valida a criação correta de subdiretórios e arquivos no disco.
+        Tests complete flow for multi-file torrents with multiple files and nested directories:
+        - Verifies data integrity across piece and file boundaries;
+        - Validates correct creation of subdirectories and files on disk.
         """
         files_spec = [
             (["manual", "intro.txt"], 1500),
@@ -167,38 +167,38 @@ class TestFullPipelineIntegration(unittest.TestCase):
 
                 downloaded_data = client.download()
 
-                # 1. Valida dados contínuos do torrent
+                # 1. Validate continuous torrent data
                 self.assertEqual(downloaded_data, fixture.total_data)
 
-                # 2. Valida cada arquivo individualmente na árvore de diretórios
+                # 2. Validate each file individually in directory tree
                 root_target = out_path / "sample_package"
                 self.assertTrue(root_target.is_dir())
 
                 for rel_path, expected_bytes in fixture.file_map.items():
                     disk_file = root_target / Path(rel_path)
-                    self.assertTrue(disk_file.exists(), f"Arquivo não encontrado no disco: {disk_file}")
+                    self.assertTrue(disk_file.exists(), f"File not found on disk: {disk_file}")
                     self.assertEqual(
                         disk_file.read_bytes(),
                         expected_bytes,
-                        f"Conteúdo divergente para o arquivo: {rel_path}",
+                        f"Divergent content for file: {rel_path}",
                     )
 
 
 class TestMultiPeerAndSwarmDynamicsIntegration(unittest.TestCase):
     """
-    Testes de integração para dinâmicas de enxame (múltiplos peers simultâneos, peças divididas).
+    Integration tests for swarm dynamics (multiple simultaneous peers, distributed pieces).
     """
 
     def test_multi_peer_disjoint_pieces_swarm_assembly(self):
         """
-        Testa o download concorrente a partir de 3 peers, onde cada um possui apenas uma fatia das peças:
-        - Peer 1 possui peças [0, 1]
-        - Peer 2 possui peças [2, 3]
-        - Peer 3 possui peças [4, 5]
-        O cliente deve conectar nos 3 peers, rotear requisições com base no Bitfield e montar o arquivo completo.
+        Tests concurrent download from 3 peers, where each possesses only a slice of pieces:
+        - Peer 1 possesses pieces [0, 1]
+        - Peer 2 possesses pieces [2, 3]
+        - Peer 3 possesses pieces [4, 5]
+        Client must connect to all 3 peers, route requests based on Bitfield, and assemble full file.
         """
         piece_length = 16 * 1024
-        file_size = 6 * piece_length  # 6 peças de 16 KB = 96 KB
+        file_size = 6 * piece_length  # 6 pieces of 16 KB = 96 KB
 
         with SimulatedSwarm() as swarm:
             fixture = TorrentFixtureBuilder.create_single_file_torrent(
@@ -209,7 +209,7 @@ class TestMultiPeerAndSwarmDynamicsIntegration(unittest.TestCase):
             )
             swarm.set_fixture(fixture)
 
-            # Cria 3 peers com fatias disjuntas de peças
+            # Create 3 peers with disjoint sets of pieces
             peer1 = swarm.spawn_peer(PeerBehavior(
                 peer_id=b"-ST0001-peer_part1___",
                 pieces_possessed={0, 1},
@@ -229,14 +229,14 @@ class TestMultiPeerAndSwarmDynamicsIntegration(unittest.TestCase):
                 max_in_flight=4,
             )
 
-            # Executa com múltiplos workers simultâneos
+            # Run with multiple concurrent workers
             downloaded = client.download(max_workers=3)
 
             self.assertEqual(downloaded, fixture.total_data)
             self.assertTrue(client.piece_manager.is_complete)
             self.assertEqual(client.piece_manager.completed_pieces_count(), 6)
 
-            # Valida que todos os 3 peers foram acionados para suas respectivas peças
+            # Validate all 3 peers were contacted for their respective pieces
             self.assertGreaterEqual(peer1.blocks_served, 2)
             self.assertGreaterEqual(peer2.blocks_served, 2)
             self.assertGreaterEqual(peer3.blocks_served, 2)
@@ -244,16 +244,16 @@ class TestMultiPeerAndSwarmDynamicsIntegration(unittest.TestCase):
 
     def test_slow_unchoke_and_dynamic_have_messages(self):
         """
-        Testa a interação quando o peer inicia em estado Choked e envia Have progressivamente:
-        1. Peer conecta choked;
-        2. Peer envia unchoke após breve atraso (50ms);
-        3. Peer não envia bitfield inicial, mas anuncia peças via HaveMessage dinamicamente.
+        Tests interaction when peer starts Choked and sends Have progressively:
+        1. Peer connects choked;
+        2. Peer sends unchoke after brief delay (50ms);
+        3. Peer sends no initial bitfield, but announces pieces dynamically via HaveMessage.
         """
         with SimulatedSwarm() as swarm:
             fixture = TorrentFixtureBuilder.create_single_file_torrent(
                 filename="dynamic_test.bin",
                 file_size=32 * 1024,
-                piece_length=16 * 1024,  # 2 peças
+                piece_length=16 * 1024,  # 2 pieces
                 announce_url=swarm.tracker_url,
             )
             swarm.set_fixture(fixture)
@@ -261,8 +261,8 @@ class TestMultiPeerAndSwarmDynamicsIntegration(unittest.TestCase):
             peer = swarm.spawn_peer(PeerBehavior(
                 peer_id=b"-ST0001-dynamicpeer01",
                 pieces_possessed={0, 1},
-                send_bitfield=False,  # Anuncia via Have
-                choke_first=True,     # Inicia choked
+                send_bitfield=False,  # Announce via Have
+                choke_first=True,     # Start choked
                 choke_delay=0.05,
             ))
 
@@ -278,19 +278,19 @@ class TestMultiPeerAndSwarmDynamicsIntegration(unittest.TestCase):
 
 class TestCorruptionAndFaultToleranceIntegration(unittest.TestCase):
     """
-    Testes de integração para tolerância a falhas, peças envenenadas e desconexão de peers.
+    Integration tests for fault tolerance, poisoned pieces, and peer disconnection.
     """
 
     def test_corrupted_piece_discard_and_failover_recovery(self):
         """
-        Testa o cenário onde um peer envia blocos corrompidos propositalmente:
-        - Peer 1 (Malicioso) possui a peça 0, mas envia dados com hash SHA-1 inválido;
-        - Peer 2 (Genuíno) possui a peça 0 e dados válidos;
-        - O cliente deve detectar o erro de SHA-1 ao finalizar a peça, descartar os blocos corrompidos,
-          resetar a peça para MISSING e baixá-la com sucesso a partir do Peer 2.
+        Tests scenario where a peer intentionally sends corrupted blocks:
+        - Peer 1 (Malicious) possesses piece 0, but sends data with invalid SHA-1 hash;
+        - Peer 2 (Genuine) possesses piece 0 and valid data;
+        - Client must detect SHA-1 error upon finishing piece, discard corrupted blocks,
+          reset piece to MISSING, and download it successfully from Peer 2.
         """
         piece_length = 16 * 1024
-        file_size = 32 * 1024  # 2 peças
+        file_size = 32 * 1024  # 2 pieces
 
         with SimulatedSwarm() as swarm:
             fixture = TorrentFixtureBuilder.create_single_file_torrent(
@@ -301,14 +301,14 @@ class TestCorruptionAndFaultToleranceIntegration(unittest.TestCase):
             )
             swarm.set_fixture(fixture)
 
-            # Peer 1: corrompe a peça 0
+            # Peer 1: corrupts piece 0
             bad_peer = swarm.spawn_peer(PeerBehavior(
                 peer_id=b"-ST0001-bad_peer_00001",
                 pieces_possessed={0, 1},
                 corrupt_pieces={0},
             ))
 
-            # Peer 2: confiável e íntegro
+            # Peer 2: reliable and intact
             good_peer = swarm.spawn_peer(PeerBehavior(
                 peer_id=b"-ST0001-good_peer_0001",
                 pieces_possessed={0, 1},
@@ -319,23 +319,23 @@ class TestCorruptionAndFaultToleranceIntegration(unittest.TestCase):
                 peer_timeout=3.0,
             )
 
-            # Executa o download com ambos os peers no pool
+            # Execute download with both peers in pool
             downloaded = client.download(max_workers=2)
 
-            # Valida que o resultado final é 100% íntegro e confere com os dados legítimos
+            # Validate final result is 100% intact and matches legitimate data
             self.assertEqual(downloaded, fixture.total_data)
             self.assertEqual(compute_sha1(downloaded), compute_sha1(fixture.total_data))
             self.assertTrue(client.piece_manager.is_complete)
 
     def test_peer_abrupt_disconnect_mid_stream_failover(self):
         """
-        Testa resiliência contra queda súbita de conexão TCP:
-        - Peer 1 atende 1 bloco e cai (disconnect_after_blocks=1);
-        - Peer 2 permanece ativo;
-        - O cliente deve capturar a queda, re-enfileirar os blocos em voo e concluir o download via Peer 2.
+        Tests resilience against sudden TCP connection drop:
+        - Peer 1 serves 1 block and drops (disconnect_after_blocks=1);
+        - Peer 2 remains active;
+        - Client must capture disconnection, re-queue in-flight blocks, and complete download via Peer 2.
         """
         piece_length = 16 * 1024
-        file_size = 48 * 1024  # 3 peças
+        file_size = 48 * 1024  # 3 pieces
 
         with SimulatedSwarm() as swarm:
             fixture = TorrentFixtureBuilder.create_single_file_torrent(
@@ -346,14 +346,14 @@ class TestCorruptionAndFaultToleranceIntegration(unittest.TestCase):
             )
             swarm.set_fixture(fixture)
 
-            # Peer que cai logo após o primeiro bloco
+            # Peer that drops immediately after first block
             flaky_peer = swarm.spawn_peer(PeerBehavior(
                 peer_id=b"-ST0001-flakypeer0001",
                 pieces_possessed={0, 1, 2},
                 disconnect_after_blocks=1,
             ))
 
-            # Peer resiliente
+            # Resilient peer
             solid_peer = swarm.spawn_peer(PeerBehavior(
                 peer_id=b"-ST0001-solidpeer0001",
                 pieces_possessed={0, 1, 2},
@@ -372,10 +372,10 @@ class TestCorruptionAndFaultToleranceIntegration(unittest.TestCase):
 
     def test_handshake_rejection_and_peer_recovery(self):
         """
-        Testa resiliência quando um peer responde ao handshake com info_hash inválido:
-        - Peer 1 (Adulterado): envia info_hash incorreto no handshake;
-        - Peer 2 (Válido): responde com handshake correto;
-        - O cliente rejeita o Peer 1 (HandshakeError), tenta o Peer 2 e completa o download.
+        Tests resilience when a peer responds to handshake with invalid info_hash:
+        - Peer 1 (Tampered): sends incorrect info_hash in handshake;
+        - Peer 2 (Valid): responds with correct handshake;
+        - Client rejects Peer 1 (HandshakeError), attempts Peer 2, and completes download.
         """
         with SimulatedSwarm() as swarm:
             fixture = TorrentFixtureBuilder.create_single_file_torrent(
@@ -408,10 +408,10 @@ class TestCorruptionAndFaultToleranceIntegration(unittest.TestCase):
 
     def test_peer_never_unchoking_timeout_and_worker_rotation(self):
         """
-        Testa a rotação de worker quando um peer conecta mas nunca desbloqueia (permanece choked):
-        - Peer 1: responde handshake e bitfield mas nunca envia Unchoke;
-        - Peer 2: responde normalmente;
-        - O cliente detecta o timeout de choke no Peer 1, encerra a sessão com ele e conclui via Peer 2.
+        Tests worker rotation when a peer connects but never unchokes (remains choked):
+        - Peer 1: responds to handshake and bitfield but never sends Unchoke;
+        - Peer 2: responds normally;
+        - Client detects choke timeout on Peer 1, terminates session, and completes via Peer 2.
         """
         with SimulatedSwarm() as swarm:
             fixture = TorrentFixtureBuilder.create_single_file_torrent(
@@ -444,9 +444,9 @@ class TestCorruptionAndFaultToleranceIntegration(unittest.TestCase):
 
     def test_multi_block_pipelining_with_large_pieces(self):
         """
-        Testa o pipelining intensivo de múltiplos blocos por peça:
-        - 1 peça de 64 KB contendo 4 blocos de 16 KB;
-        - max_in_flight=4 para envio simultâneo de requisições sem espera individual.
+        Tests intensive pipelining of multiple blocks per piece:
+        - 1 piece of 64 KB containing 4 blocks of 16 KB;
+        - max_in_flight=4 for simultaneous request dispatch without individual waiting.
         """
         with SimulatedSwarm() as swarm:
             fixture = TorrentFixtureBuilder.create_single_file_torrent(
@@ -468,7 +468,7 @@ class TestCorruptionAndFaultToleranceIntegration(unittest.TestCase):
             )
 
             downloaded = client.download(max_workers=1)
-            time.sleep(0.05)  # Permite sincronização final da thread do peer
+            time.sleep(0.05)  # Allow final synchronization of peer thread
 
             self.assertEqual(downloaded, fixture.total_data)
             self.assertTrue(client.piece_manager.is_complete)
@@ -477,22 +477,22 @@ class TestCorruptionAndFaultToleranceIntegration(unittest.TestCase):
 
 class TestTrackerFailoverAndResilienceIntegration(unittest.TestCase):
     """
-    Testes de integração para fallback e resiliência de comunicação com Trackers.
+    Integration tests for Tracker communication fallback and resilience.
     """
 
     def test_tracker_tier_fallback_on_primary_failure(self):
         """
-        Testa a seleção de trackers quando o primário falha (ex: HTTP 500 ou indisponível):
-        - Tracker Primário: retorna HTTP 500;
-        - Tracker Secundário: responde normalmente com a lista de peers;
-        - O cliente deve tentar o primário, capturar a falha, avançar para o secundário e concluir o download.
+        Tests tracker selection when primary fails (e.g. HTTP 500 or unavailable):
+        - Primary Tracker: returns HTTP 500;
+        - Secondary Tracker: responds normally with peer list;
+        - Client must attempt primary, catch failure, advance to secondary, and finish download.
         """
-        # Inicia Tracker 1 (Falho)
+        # Start Tracker 1 (Failing)
         broken_tracker = SimulatedTrackerServer()
         broken_tracker.set_http_error(500)
         broken_url = broken_tracker.start()
 
-        # Inicia Tracker 2 (Operacional)
+        # Start Tracker 2 (Operational)
         good_tracker = SimulatedTrackerServer()
         good_url = good_tracker.start()
 
@@ -505,7 +505,7 @@ class TestTrackerFailoverAndResilienceIntegration(unittest.TestCase):
         )
 
         try:
-            # Cria Peer registrado no tracker funcional
+            # Create Peer registered on functional tracker
             peer_server = SimulatedPeerServer(fixture, behavior=PeerBehavior())
             peer_info = peer_server.start()
             good_tracker.add_peer(peer_info)
@@ -520,7 +520,7 @@ class TestTrackerFailoverAndResilienceIntegration(unittest.TestCase):
 
             self.assertEqual(downloaded, fixture.total_data)
             self.assertTrue(client.piece_manager.is_complete)
-            # Verifica que o tracker funcional recebeu as consultas
+            # Verify functional tracker received queries
             self.assertTrue(len(good_tracker.get_announces()) >= 1)
 
         finally:

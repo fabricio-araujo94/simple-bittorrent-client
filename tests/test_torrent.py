@@ -1,16 +1,16 @@
 """
-Testes unitários abrangentes para a camada de interpretação de arquivos .torrent.
+Comprehensive unit tests for .torrent file parsing layer.
 
-Cobre:
-- Carregamento de torrents a partir de bytes e arquivos em disco;
-- Parsing de torrents single-file e multi-file;
-- Extração de announce, announce-list (tiers BEP 0012) e lista agregada de trackers;
-- Extração precisa da seção info e cálculo do info_hash SHA-1;
-- Extração de name, piece length, pieces e divisão em hashes individuais de 20 bytes;
-- Métodos auxiliares de peças (get_piece_length, get_piece_hash, verify_piece);
-- Validação estrita de campos obrigatórios e tipos de dados;
-- Validação de consistência matemática (peças vs tamanho total vs piece length);
-- Rejeição de torrents malformados, inconsistentes ou incompletos.
+Covers:
+- Loading torrents from raw bytes and disk files;
+- Parsing single-file and multi-file torrents;
+- Extraction of announce, announce-list (BEP 0012 tiers) and aggregated tracker list;
+- Accurate extraction of info section and SHA-1 info_hash calculation;
+- Extraction of name, piece length, pieces, and 20-byte hash splitting;
+- Piece helper methods (get_piece_length, get_piece_hash, verify_piece);
+- Strict validation of required fields and data types;
+- Mathematical consistency validation (pieces vs total size vs piece length);
+- Rejection of malformed, inconsistent, or incomplete torrents.
 """
 
 import hashlib
@@ -32,17 +32,17 @@ from src.torrent import (
 
 
 class TestTorrentParser(unittest.TestCase):
-    """Testes principais para parsing e validação de metadados .torrent."""
+    """Primary tests for .torrent metadata parsing and validation."""
 
     def setUp(self):
-        # Cria dados simulados de 2 peças (500 KB no total, piece_length de 256 KB)
+        # Create simulated data of 2 pieces (500 KB total, piece_length of 256 KB)
         self.piece_data_0 = b"A" * 262144
         self.piece_data_1 = b"B" * (512000 - 262144)  # 249856 bytes
         self.piece0_hash = hashlib.sha1(self.piece_data_0).digest()
         self.piece1_hash = hashlib.sha1(self.piece_data_1).digest()
         self.pieces_bytes = self.piece0_hash + self.piece1_hash
 
-        # Dicionário 'info' single-file
+        # Single-file 'info' dictionary
         self.single_info_dict = {
             b"length": 512000,
             b"name": b"debian-live.iso",
@@ -52,7 +52,7 @@ class TestTorrentParser(unittest.TestCase):
         self.single_info_bencoded = encode_bencode(self.single_info_dict)
         self.expected_single_info_hash = hashlib.sha1(self.single_info_bencoded).digest()
 
-        # Dicionário torrent single-file completo com metadados opcionais
+        # Complete single-file torrent dictionary with optional metadata
         self.single_torrent_dict = {
             b"announce": b"http://tracker.debian.org:6969/announce",
             b"announce-list": [
@@ -66,12 +66,12 @@ class TestTorrentParser(unittest.TestCase):
         }
         self.single_torrent_bytes = encode_bencode(self.single_torrent_dict)
 
-    # --- Testes de Sucesso (Single-file e Multi-file) ---
+    # --- Success Tests (Single-file and Multi-file) ---
 
     def test_load_single_file_torrent_success(self):
         metadata = load_torrent_bytes(self.single_torrent_bytes)
 
-        # Validação básica de metadados
+        # Basic metadata validation
         self.assertEqual(metadata.announce, "http://tracker.debian.org:6969/announce")
         self.assertEqual(metadata.name, "debian-live.iso")
         self.assertEqual(metadata.piece_length, 262144)
@@ -81,7 +81,7 @@ class TestTorrentParser(unittest.TestCase):
         self.assertEqual(metadata.files[0].length, 512000)
         self.assertEqual(metadata.files[0].full_path, "debian-live.iso")
 
-        # Validação de trackers e tiers (BEP 0012)
+        # Trackers and tiers validation (BEP 0012)
         expected_announce_list = [
             ["http://tracker.debian.org:6969/announce", "http://backup.debian.org/announce"],
             ["udp://tracker.openbittorrent.com:80/announce"],
@@ -94,24 +94,24 @@ class TestTorrentParser(unittest.TestCase):
         ]
         self.assertEqual(metadata.trackers, expected_trackers)
 
-        # Validação de hashes e integridade da seção info
+        # Hashes and info section integrity validation
         self.assertEqual(metadata.info_hash, self.expected_single_info_hash)
         self.assertEqual(metadata.info_hash_hex, self.expected_single_info_hash.hex())
         self.assertEqual(metadata.raw_info_bytes, self.single_info_bencoded)
 
-        # Validação de divisão de peças
+        # Piece division validation
         self.assertEqual(metadata.num_pieces, 2)
         self.assertEqual(metadata.piece_hashes, [self.piece0_hash, self.piece1_hash])
         self.assertEqual(metadata.pieces, self.pieces_bytes)
 
-        # Validação de metadados opcionais
+        # Optional metadata validation
         self.assertEqual(metadata.comment, "Debian Live Image")
         self.assertEqual(metadata.created_by, "mktorrent 1.1")
         self.assertEqual(metadata.creation_date, 1672531199)
         self.assertFalse(metadata.private)
 
     def test_load_multi_file_torrent_success(self):
-        # 3 arquivos somando 512000 bytes
+        # 3 files summing to 512,000 bytes
         file1_len = 200000
         file2_len = 100000
         file3_len = 212000
@@ -153,21 +153,21 @@ class TestTorrentParser(unittest.TestCase):
             self.assertEqual(metadata.name, "debian-live.iso")
             self.assertEqual(metadata.info_hash, self.expected_single_info_hash)
 
-            # Teste passando como string
+            # Test passing as string
             metadata_str = load_torrent_file(str(file_path))
             self.assertEqual(metadata_str.info_hash, self.expected_single_info_hash)
 
-    # --- Testes de Métodos Auxiliares de Peças ---
+    # --- Piece Helper Methods Tests ---
 
     def test_piece_length_helpers(self):
         metadata = load_torrent_bytes(self.single_torrent_bytes)
 
-        # Primeira peça: tamanho total padrão (262144)
+        # First piece: standard full size (262144)
         self.assertEqual(metadata.get_piece_length(0), 262144)
-        # Segunda (última) peça: resto da divisão (512000 - 262144 = 249856)
+        # Second (last) piece: remainder of division (512000 - 262144 = 249856)
         self.assertEqual(metadata.get_piece_length(1), 249856)
 
-        # Índice fora de faixa
+        # Index out of range
         with self.assertRaises(IndexError):
             metadata.get_piece_length(-1)
         with self.assertRaises(IndexError):
@@ -184,76 +184,76 @@ class TestTorrentParser(unittest.TestCase):
     def test_verify_piece(self):
         metadata = load_torrent_bytes(self.single_torrent_bytes)
 
-        # Peça 0 válida
+        # Valid piece 0
         self.assertTrue(metadata.verify_piece(0, self.piece_data_0))
-        # Peça 1 válida
+        # Valid piece 1
         self.assertTrue(metadata.verify_piece(1, self.piece_data_1))
 
-        # Dados com hash incorreto
+        # Data with incorrect hash
         corrupted_data = b"Z" * 262144
         self.assertFalse(metadata.verify_piece(0, corrupted_data))
 
-        # Dados com tamanho incorreto (menor ou maior)
+        # Data with incorrect size (smaller or larger)
         self.assertFalse(metadata.verify_piece(0, b"short_data"))
 
-        # Tipo inválido
+        # Invalid type
         with self.assertRaises(TypeError):
             metadata.verify_piece(0, "not_bytes")  # type: ignore
 
-        # Índice inválido
+        # Invalid index
         with self.assertRaises(IndexError):
             metadata.verify_piece(99, self.piece_data_0)
 
-    # --- Testes de Validação e Tratamento de Erros ---
+    # --- Validation and Error Handling Tests ---
 
     def test_load_torrent_invalid_inputs(self):
-        # Entrada que não é bytes
+        # Input that is not bytes
         with self.assertRaises(TorrentParseError):
             load_torrent_bytes("string_data")  # type: ignore
         with self.assertRaises(TorrentParseError):
             load_torrent_bytes(12345)  # type: ignore
-        # Buffer vazio
+        # Empty buffer
         with self.assertRaises(TorrentParseError):
             load_torrent_bytes(b"")
 
     def test_load_torrent_file_errors(self):
-        # Arquivo inexistente
+        # Non-existent file
         with self.assertRaises(FileNotFoundError):
             load_torrent_file("non_existent_file.torrent")
 
-        # Caminho é um diretório
+        # Path is a directory
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaises(TorrentParseError):
                 load_torrent_file(tmpdir)
 
     def test_missing_or_invalid_root_structure(self):
-        # Raiz não é dicionário
+        # Root is not a dictionary
         not_a_dict = encode_bencode([1, 2, 3])
         with self.assertRaises(TorrentValidationError):
             load_torrent_bytes(not_a_dict)
 
-        # Ausência de seção info
+        # Absence of info section
         no_info = encode_bencode({b"announce": b"http://tracker.com"})
         with self.assertRaises(TorrentValidationError):
             load_torrent_bytes(no_info)
 
-        # Seção info não é dicionário
+        # Info section is not a dictionary
         bad_info_type = encode_bencode({b"announce": b"http://tracker.com", b"info": b"not_a_dict"})
         with self.assertRaises(TorrentValidationError):
             load_torrent_bytes(bad_info_type)
 
     def test_missing_or_invalid_trackers(self):
-        # Nem announce nem announce-list
+        # Neither announce nor announce-list
         no_trackers = encode_bencode({b"info": self.single_info_dict})
         with self.assertRaises(TorrentValidationError):
             load_torrent_bytes(no_trackers)
 
-        # Announce com tipo inválido
+        # Announce with invalid type
         bad_announce = encode_bencode({b"announce": 12345, b"info": self.single_info_dict})
         with self.assertRaises(TorrentValidationError):
             load_torrent_bytes(bad_announce)
 
-        # Announce-list com tipo inválido
+        # Announce-list with invalid type
         bad_announce_list = encode_bencode({
             b"announce-list": b"not_a_list",
             b"info": self.single_info_dict,
@@ -262,25 +262,25 @@ class TestTorrentParser(unittest.TestCase):
             load_torrent_bytes(bad_announce_list)
 
     def test_missing_or_invalid_name(self):
-        # Sem campo name
+        # Missing name field
         bad_info = dict(self.single_info_dict)
         del bad_info[b"name"]
         with self.assertRaises(TorrentValidationError):
             load_torrent_bytes(encode_bencode({b"announce": b"http://tr.org", b"info": bad_info}))
 
-        # Name com string vazia
+        # Name with empty string
         bad_info[b"name"] = b""
         with self.assertRaises(TorrentValidationError):
             load_torrent_bytes(encode_bencode({b"announce": b"http://tr.org", b"info": bad_info}))
 
     def test_missing_or_invalid_piece_length(self):
         bad_info = dict(self.single_info_dict)
-        # piece length ausente
+        # Missing piece length
         del bad_info[b"piece length"]
         with self.assertRaises(TorrentValidationError):
             load_torrent_bytes(encode_bencode({b"announce": b"http://tr.org", b"info": bad_info}))
 
-        # piece length zero ou negativo
+        # Zero or negative piece length
         bad_info[b"piece length"] = 0
         with self.assertRaises(TorrentValidationError):
             load_torrent_bytes(encode_bencode({b"announce": b"http://tr.org", b"info": bad_info}))
@@ -291,31 +291,31 @@ class TestTorrentParser(unittest.TestCase):
 
     def test_missing_or_invalid_pieces(self):
         bad_info = dict(self.single_info_dict)
-        # pieces ausente
+        # Missing pieces
         del bad_info[b"pieces"]
         with self.assertRaises(TorrentValidationError):
             load_torrent_bytes(encode_bencode({b"announce": b"http://tr.org", b"info": bad_info}))
 
-        # pieces não é múltiplo de 20 bytes
+        # pieces is not a multiple of 20 bytes
         bad_info[b"pieces"] = b"1234567890"  # 10 bytes
         with self.assertRaises(TorrentValidationError):
             load_torrent_bytes(encode_bencode({b"announce": b"http://tr.org", b"info": bad_info}))
 
     def test_single_and_multi_file_conflicts(self):
-        # Ambos 'length' e 'files' presentes simultaneamente
+        # Both 'length' and 'files' present simultaneously
         conflicted_info = dict(self.single_info_dict)
         conflicted_info[b"files"] = [{b"length": 512000, b"path": [b"file.bin"]}]
         with self.assertRaises(TorrentValidationError):
             load_torrent_bytes(encode_bencode({b"announce": b"http://tr.org", b"info": conflicted_info}))
 
-        # Nem 'length' nem 'files' presentes
+        # Neither 'length' nor 'files' present
         empty_files_info = dict(self.single_info_dict)
         del empty_files_info[b"length"]
         with self.assertRaises(TorrentValidationError):
             load_torrent_bytes(encode_bencode({b"announce": b"http://tr.org", b"info": empty_files_info}))
 
     def test_multi_file_validation_errors(self):
-        # files vazio
+        # Empty files
         bad_multi_info = {
             b"files": [],
             b"name": b"bundle",
@@ -325,36 +325,36 @@ class TestTorrentParser(unittest.TestCase):
         with self.assertRaises(TorrentValidationError):
             load_torrent_bytes(encode_bencode({b"announce": b"http://tr.org", b"info": bad_multi_info}))
 
-        # Arquivo sem campo 'length'
+        # File without 'length' field
         bad_multi_info[b"files"] = [{b"path": [b"file.txt"]}]
         with self.assertRaises(TorrentValidationError):
             load_torrent_bytes(encode_bencode({b"announce": b"http://tr.org", b"info": bad_multi_info}))
 
-        # Arquivo com length negativo
+        # File with negative length
         bad_multi_info[b"files"] = [{b"length": -10, b"path": [b"file.txt"]}]
         with self.assertRaises(TorrentValidationError):
             load_torrent_bytes(encode_bencode({b"announce": b"http://tr.org", b"info": bad_multi_info}))
 
-        # Arquivo sem campo 'path'
+        # File without 'path' field
         bad_multi_info[b"files"] = [{b"length": 100}]
         with self.assertRaises(TorrentValidationError):
             load_torrent_bytes(encode_bencode({b"announce": b"http://tr.org", b"info": bad_multi_info}))
 
-        # Arquivo com path vazio
+        # File with empty path
         bad_multi_info[b"files"] = [{b"length": 100, b"path": []}]
         with self.assertRaises(TorrentValidationError):
             load_torrent_bytes(encode_bencode({b"announce": b"http://tr.org", b"info": bad_multi_info}))
 
     def test_mathematical_piece_count_inconsistency(self):
-        # total_length = 512000, piece_length = 262144 -> math.ceil(512000 / 262144) = 2 peças
-        # Passar apenas 1 hash de 20 bytes causa erro de inconsistência
+        # total_length = 512000, piece_length = 262144 -> math.ceil(512000 / 262144) = 2 pieces
+        # Passing only 1 hash of 20 bytes causes inconsistency error
         bad_info = dict(self.single_info_dict)
-        bad_info[b"pieces"] = self.piece0_hash  # 1 peça ao invés de 2
+        bad_info[b"pieces"] = self.piece0_hash  # 1 piece instead of 2
         with self.assertRaises(TorrentValidationError):
             load_torrent_bytes(encode_bencode({b"announce": b"http://tr.org", b"info": bad_info}))
 
-        # Passar 3 hashes de 20 bytes causa erro de inconsistência
-        bad_info[b"pieces"] = self.pieces_bytes + self.piece0_hash  # 3 peças
+        # Passing 3 hashes of 20 bytes causes inconsistency error
+        bad_info[b"pieces"] = self.pieces_bytes + self.piece0_hash  # 3 pieces
         with self.assertRaises(TorrentValidationError):
             load_torrent_bytes(encode_bencode({b"announce": b"http://tr.org", b"info": bad_info}))
 

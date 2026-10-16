@@ -1,15 +1,15 @@
 """
-Testes unitários abrangentes para a camada de protocolo de peers (Peer Wire Protocol - BEP 0003).
+Comprehensive unit tests for the peer wire protocol layer (Peer Wire Protocol - BEP 0003).
 
-Cobre:
-- Montagem, envio e validação do Handshake de 68 bytes;
-- Codificação e decodificação precisa de todas as mensagens padrão (KeepAlive, Choke, Unchoke,
+Covers:
+- Assembly, transmission, and validation of 68-byte Handshake;
+- Accurate encoding and decoding of all standard messages (KeepAlive, Choke, Unchoke,
   Interested, NotInterested, Have, Bitfield, Request, Piece, Cancel, Port);
-- Tratamento e manipulação de Bitfield por índice de bits e bytes;
-- Proteção contra mensagens truncadas, malformadas e tamanhos excessivos (DoS);
-- Parsing de streams com mensagens fragmentadas e múltiplas mensagens no mesmo buffer;
-- Testes com sockets reais usando socket.socketpair() simulando fragmentação byte a byte,
-  packet coalescing, timeouts de leitura/escrita e desconexões prematuras (EOF).
+- Bitfield handling and manipulation by bit index and bytes;
+- Protection against truncated, malformed, and oversized messages (DoS);
+- Stream parsing with fragmented and multiple messages in same buffer;
+- Real socket tests using socket.socketpair() simulating byte-by-byte fragmentation,
+  packet coalescing, read/write timeouts, and premature disconnects (EOF).
 """
 
 import socket
@@ -67,7 +67,7 @@ from src.peer import (
 
 
 class TestHandshake(unittest.TestCase):
-    """Testes para codificação, decodificação e validação do Handshake de 68 bytes."""
+    """Tests for encoding, decoding, and validation of 68-byte Handshake."""
 
     def setUp(self):
         self.info_hash = b"\x12" * 20
@@ -112,31 +112,31 @@ class TestHandshake(unittest.TestCase):
     def test_parse_handshake_validation_errors(self):
         valid_raw = encode_handshake(self.info_hash, self.peer_id)
 
-        # Tamanho inválido (< 68 bytes ou > 68 bytes)
+        # Invalid size (< 68 bytes or > 68 bytes)
         with self.assertRaises(HandshakeError):
             parse_handshake(valid_raw[:60])
         with self.assertRaises(HandshakeError):
             parse_handshake(valid_raw + b"\x00")
 
-        # pstrlen inválido (!= 19)
+        # Invalid pstrlen (!= 19)
         bad_pstrlen = b"\x14" + valid_raw[1:]
         with self.assertRaises(HandshakeError):
             parse_handshake(bad_pstrlen)
 
-        # pstr inválido
+        # Invalid pstr
         bad_pstr = valid_raw[:1] + b"WrongProtoProtocol!" + valid_raw[20:]
         with self.assertRaises(HandshakeError):
             parse_handshake(bad_pstr)
 
-        # info_hash divergente
+        # info_hash mismatch
         with self.assertRaises(HandshakeError) as ctx:
             parse_handshake(valid_raw, expected_info_hash=b"\x99" * 20)
-        self.assertIn("info_hash divergente", str(ctx.exception))
+        self.assertIn("info_hash mismatch", str(ctx.exception))
 
-        # peer_id divergente
+        # peer_id mismatch
         with self.assertRaises(HandshakeError) as ctx:
             parse_handshake(valid_raw, expected_peer_id=b"-XX0000-000000000000")
-        self.assertIn("peer_id divergente", str(ctx.exception))
+        self.assertIn("peer_id mismatch", str(ctx.exception))
 
     def test_handshake_invalid_inputs(self):
         with self.assertRaises(ValueError):
@@ -150,19 +150,19 @@ class TestHandshake(unittest.TestCase):
 
 
 class TestBitfield(unittest.TestCase):
-    """Testes para manipulação precisa da estrutura de Bitfield."""
+    """Tests for precise manipulation of Bitfield structure."""
 
     def test_bitfield_manipulation(self):
-        # 10 peças -> 2 bytes necessários (16 bits, 6 spare bits)
+        # 10 pieces -> 2 bytes needed (16 bits, 6 spare bits)
         bf = Bitfield(num_pieces=10)
         self.assertEqual(len(bf.to_bytes()), 2)
         self.assertEqual(bf.count(), 0)
         self.assertFalse(bf.is_complete)
 
-        # Seta peças 0, 7, 8
-        # Peça 0: byte 0, bit 7 (0x80)
-        # Peça 7: byte 0, bit 0 (0x01) -> byte 0 = 0x81
-        # Peça 8: byte 1, bit 7 (0x80) -> byte 1 = 0x80
+        # Set pieces 0, 7, 8
+        # Piece 0: byte 0, bit 7 (0x80)
+        # Piece 7: byte 0, bit 0 (0x01) -> byte 0 = 0x81
+        # Piece 8: byte 1, bit 7 (0x80) -> byte 1 = 0x80
         bf.set_piece(0, True)
         bf.set_piece(7, True)
         bf.set_piece(8, True)
@@ -175,7 +175,7 @@ class TestBitfield(unittest.TestCase):
         self.assertEqual(bf.count(), 3)
         self.assertEqual(bf.to_bytes(), bytes([0x81, 0x80]))
 
-        # Limpa peça 0
+        # Clear piece 0
         bf.set_piece(0, False)
         self.assertFalse(bf.has_piece(0))
         self.assertEqual(bf.count(), 2)
@@ -204,7 +204,7 @@ class TestBitfield(unittest.TestCase):
 
 
 class TestMessageEncodingAndParsing(unittest.TestCase):
-    """Testes para codificação, decodificação e round-trip de todas as mensagens."""
+    """Tests for encoding, decoding, and round-trip of all messages."""
 
     def test_keep_alive_message(self):
         msg = KeepAliveMessage()
@@ -311,7 +311,7 @@ class TestMessageEncodingAndParsing(unittest.TestCase):
         self.assertEqual(parsed.listen_port, 6881)
 
     def test_unknown_message(self):
-        # Mensagem com ID não-padrão (ex: ID 99)
+        # Message with non-standard ID (e.g. ID 99)
         payload = bytes([99, 1, 2, 3])
         length = len(payload)
         raw = struct.pack("!I", length) + payload
@@ -322,14 +322,14 @@ class TestMessageEncodingAndParsing(unittest.TestCase):
 
 
 class TestMessageValidationAndErrors(unittest.TestCase):
-    """Testes para rejeição de mensagens com tamanhos ou estruturas inválidas."""
+    """Tests for rejection of messages with invalid sizes or structures."""
 
     def test_buffer_too_short_for_length_prefix(self):
         with self.assertRaises(PeerProtocolError):
-            parse_message(b"\x00\x00\x01")  # Apenas 3 bytes
+            parse_message(b"\x00\x00\x01")  # Only 3 bytes
 
     def test_payload_length_mismatch(self):
-        # Prefix diz length=10, mas só fornece 4 bytes
+        # Prefix says length=10, but only provides 4 bytes
         bad_msg = struct.pack("!I", 10) + b"\x00\x01\x02\x03"
         with self.assertRaises(PeerProtocolError):
             parse_message(bad_msg)
@@ -340,7 +340,7 @@ class TestMessageValidationAndErrors(unittest.TestCase):
             parse_message(bad_choke)
 
     def test_have_with_invalid_length(self):
-        # Have precisa de 4 bytes de índice (length=5)
+        # Have needs 4 bytes of index (length=5)
         bad_have = struct.pack("!IB", 1, MessageID.HAVE)
         with self.assertRaises(MessageSizeError):
             parse_message(bad_have)
@@ -361,7 +361,7 @@ class TestMessageValidationAndErrors(unittest.TestCase):
         with self.assertRaises(ValueError):
             RequestMessage(index=-1, begin=0, length=100)
         with self.assertRaises(ValueError):
-            RequestMessage(index=0, begin=0, length=0)  # length zero
+            RequestMessage(index=0, begin=0, length=0)  # Zero length
         with self.assertRaises(ValueError):
             PortMessage(listen_port=0)
         with self.assertRaises(ValueError):
@@ -369,7 +369,7 @@ class TestMessageValidationAndErrors(unittest.TestCase):
 
 
 class TestBufferStreamParsing(unittest.TestCase):
-    """Testes para parsing contínuo a partir de streams/buffers mutáveis."""
+    """Tests for continuous stream parsing from mutable buffers."""
 
     def test_parse_multiple_messages_in_buffer(self):
         m1 = ChokeMessage().encode()
@@ -392,16 +392,16 @@ class TestBufferStreamParsing(unittest.TestCase):
         m1 = InterestedMessage().encode()  # 5 bytes
         m2_full = RequestMessage(index=1, begin=0, length=16384).encode()  # 17 bytes
 
-        # Coloca m1 inteira e metade de m2 no buffer
+        # Place entire m1 and half of m2 in buffer
         buffer = bytearray(m1 + m2_full[:10])
         messages = parse_messages_from_buffer(buffer)
 
         self.assertEqual(len(messages), 1)
         self.assertIsInstance(messages[0], InterestedMessage)
-        # O fragmento de 10 bytes de m2 deve permanecer no buffer intacto
+        # The 10-byte fragment of m2 must remain intact in buffer
         self.assertEqual(len(buffer), 10)
 
-        # Adiciona o restante de m2
+        # Add remainder of m2
         buffer.extend(m2_full[10:])
         messages2 = parse_messages_from_buffer(buffer)
         self.assertEqual(len(messages2), 1)
@@ -416,7 +416,7 @@ class TestBufferStreamParsing(unittest.TestCase):
 
 
 class TestPeerConnectionWithSocketpair(unittest.TestCase):
-    """Testes de integração de rede usando socket.socketpair()."""
+    """Network integration tests using socket.socketpair()."""
 
     def setUp(self):
         self.s_client, self.s_server = socket.socketpair()
@@ -431,11 +431,11 @@ class TestPeerConnectionWithSocketpair(unittest.TestCase):
     def test_handshake_exchange(self):
         conn = PeerConnection(sock=self.s_client, default_timeout=5.0)
 
-        # Servidor envia seu handshake
+        # Server sends its handshake
         server_hs_bytes = encode_handshake(self.info_hash, self.server_peer_id)
         self.s_server.sendall(server_hs_bytes)
 
-        # Cliente executa handshake
+        # Client executes handshake
         handshake = conn.perform_handshake(
             info_hash=self.info_hash,
             peer_id=self.client_peer_id,
@@ -445,7 +445,7 @@ class TestPeerConnectionWithSocketpair(unittest.TestCase):
         self.assertEqual(handshake.info_hash, self.info_hash)
         self.assertEqual(handshake.peer_id, self.server_peer_id)
 
-        # Servidor lê o handshake enviado pelo cliente
+        # Server reads handshake sent by client
         received_by_server = self.s_server.recv(68)
         self.assertEqual(len(received_by_server), 68)
         server_parsed = parse_handshake(received_by_server)
@@ -454,15 +454,15 @@ class TestPeerConnectionWithSocketpair(unittest.TestCase):
     def test_fragmented_delivery(self):
         conn = PeerConnection(sock=self.s_client, default_timeout=5.0)
 
-        # Monta mensagem Piece de 100 bytes
+        # Assemble 100-byte Piece message
         block = b"X" * 100
         piece_msg = PieceMessage(index=2, begin=0, block=block).encode()
 
-        # Envia 1 byte por vez para testar fragmentação extrema
+        # Send 1 byte at a time to test extreme fragmentation
         for b in piece_msg:
             self.s_server.sendall(bytes([b]))
 
-        # Cliente deve remontar e decodificar com perfeição
+        # Client must reassemble and decode perfectly
         msg = conn.read_message()
         self.assertIsInstance(msg, PieceMessage)
         self.assertEqual(msg.index, 2)
@@ -476,10 +476,10 @@ class TestPeerConnectionWithSocketpair(unittest.TestCase):
         m2 = HaveMessage(piece_index=99).encode()
         m3 = KeepAliveMessage().encode()
 
-        # Envia todas de uma vez em um único pacote TCP
+        # Send all at once in a single TCP packet
         self.s_server.sendall(m1 + m2 + m3)
 
-        # Lê mensagens sequencialmente
+        # Read messages sequentially
         r1 = conn.read_message()
         self.assertIsInstance(r1, UnchokeMessage)
         self.assertFalse(conn.peer_choking)
@@ -494,24 +494,24 @@ class TestPeerConnectionWithSocketpair(unittest.TestCase):
     def test_state_tracking_and_helpers(self):
         conn = PeerConnection(sock=self.s_client, default_timeout=5.0, num_pieces=8)
 
-        # Estado inicial
+        # Initial state
         self.assertTrue(conn.am_choking)
         self.assertFalse(conn.am_interested)
         self.assertTrue(conn.peer_choking)
         self.assertFalse(conn.peer_interested)
 
-        # Cliente envia unchoke e interested
+        # Client sends unchoke and interested
         conn.send_unchoke()
         self.assertFalse(conn.am_choking)
 
         conn.send_interested()
         self.assertTrue(conn.am_interested)
 
-        # Servidor lê e valida
+        # Server reads and validates
         data = self.s_server.recv(1024)
         self.assertEqual(data, UnchokeMessage().encode() + InterestedMessage().encode())
 
-        # Servidor envia bitfield (8 peças: 11000000 -> peças 0 e 1)
+        # Server sends bitfield (8 pieces: 11000000 -> pieces 0 and 1)
         bf_msg = BitfieldMessage(bitfield=bytes([0b11000000])).encode()
         self.s_server.sendall(bf_msg)
 
@@ -522,7 +522,7 @@ class TestPeerConnectionWithSocketpair(unittest.TestCase):
         self.assertTrue(conn.peer_bitfield.has_piece(1))
         self.assertFalse(conn.peer_bitfield.has_piece(2))
 
-        # Servidor envia have para peça 2
+        # Server sends have for piece 2
         self.s_server.sendall(HaveMessage(piece_index=2).encode())
         msg_have = conn.read_message()
         self.assertIsInstance(msg_have, HaveMessage)
@@ -531,7 +531,7 @@ class TestPeerConnectionWithSocketpair(unittest.TestCase):
     def test_bitfield_rejects_nonzero_spare_bits(self):
         conn = PeerConnection(sock=self.s_client, default_timeout=5.0, num_pieces=10)
 
-        # Para 10 peças, os 6 bits inferiores do segundo byte são sobressalentes.
+        # For 10 pieces, lower 6 bits of second byte are spare bits.
         invalid_bitfield = BitfieldMessage(bitfield=bytes([0x00, 0x01])).encode()
         self.s_server.sendall(invalid_bitfield)
 
@@ -541,7 +541,7 @@ class TestPeerConnectionWithSocketpair(unittest.TestCase):
     def test_connection_closed_raises_error(self):
         conn = PeerConnection(sock=self.s_client, default_timeout=5.0)
 
-        # Fecha o lado do servidor
+        # Close server side
         self.s_server.close()
 
         with self.assertRaises(PeerConnectionClosedError):
@@ -550,7 +550,7 @@ class TestPeerConnectionWithSocketpair(unittest.TestCase):
     def test_timeout_raises_error(self):
         conn = PeerConnection(sock=self.s_client, default_timeout=0.05)
 
-        # Nenhum dado enviado pelo servidor -> deve estourar o timeout rápido
+        # No data sent by server -> must trigger quick timeout
         with self.assertRaises(PeerTimeoutError):
             conn.read_message()
 

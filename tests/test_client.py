@@ -1,24 +1,24 @@
 """
-Testes de integração de ponta a ponta para o fluxo completo de download (TorrentClient).
+End-to-end integration tests for the full download flow (TorrentClient).
 
-Cobre o fluxo completo de 17 etapas:
-1. Carregar .torrent;
-2. Calcular info_hash;
-3. Anunciar ao tracker;
-4. Obter peers;
-5. Conectar aos peers;
-6. Realizar handshake;
-7. Receber bitfield/have;
-8. Enviar interested quando apropriado;
-9. Aguardar unchoke;
-10. Selecionar uma peça disponível;
-11. Solicitar blocos;
-12. Receber piece;
-13. Reconstruir a peça;
-14. Validar SHA-1;
-15. Marcar peça como concluída;
-16. Repetir até concluir o torrent;
-17. Montar e gravar o arquivo final (single-file e multi-file).
+Covers the full 17-step flow:
+1. Load .torrent;
+2. Calculate info_hash;
+3. Announce to tracker;
+4. Obtain peers;
+5. Connect to peers;
+6. Perform handshake;
+7. Receive bitfield/have;
+8. Send interested when appropriate;
+9. Wait for unchoke;
+10. Select an available piece;
+11. Request blocks;
+12. Receive piece;
+13. Reassemble piece;
+14. Validate SHA-1;
+15. Mark piece as completed;
+16. Repeat until torrent is complete;
+17. Assemble and write final file (single-file and multi-file).
 """
 
 import hashlib
@@ -86,27 +86,27 @@ def run_mock_peer_server(
     Simula o comportamento de um peer BitTorrent completo em uma thread de teste.
     """
     try:
-        # 1. Recebe o handshake do cliente
+        # 1. Receive client handshake
         client_hs_raw = server_sock.recv(68)
         if len(client_hs_raw) != 68:
             return
         client_hs = parse_handshake(client_hs_raw)
 
-        # 2. Envia o handshake do servidor
+        # 2. Send server handshake
         server_hs = encode_handshake(expected_info_hash, server_peer_id)
         server_sock.sendall(server_hs)
 
         total_length = len(torrent_data)
         num_pieces = (total_length + piece_length - 1) // piece_length
 
-        # 3. Envia Bitfield ou Have
+        # 3. Send Bitfield or Have
         if send_bitfield_first:
             bf = Bitfield(num_pieces=num_pieces)
             for i in range(num_pieces):
                 bf.set_piece(i, True)
             server_sock.sendall(BitfieldMessage(bitfield=bf.to_bytes()).encode())
 
-        # 4. Envia Choke ou Unchoke
+        # 4. Send Choke or Unchoke
         if choke_first:
             server_sock.sendall(ChokeMessage().encode())
             time.sleep(0.02)
@@ -114,7 +114,7 @@ def run_mock_peer_server(
         else:
             server_sock.sendall(UnchokeMessage().encode())
 
-        # Buffer para ler mensagens do cliente
+        # Buffer to read client messages
         buffer = bytearray()
         first_piece_sent = False
 
@@ -124,7 +124,7 @@ def run_mock_peer_server(
                 break
             buffer.extend(data)
 
-            # Processa mensagens completas
+            # Process complete messages
             while len(buffer) >= 4:
                 length = struct.unpack("!I", buffer[:4])[0]
                 if len(buffer) < 4 + length:
@@ -138,23 +138,23 @@ def run_mock_peer_server(
                 msg = parse_message(msg_bytes)
 
                 if isinstance(msg, InterestedMessage):
-                    # Garante que o cliente está unchoked
+                    # Ensure client is unchoked
                     server_sock.sendall(UnchokeMessage().encode())
 
                 elif isinstance(msg, RequestMessage):
-                    # Calcula o offset absoluto nos dados do torrent
+                    # Compute absolute offset into torrent data
                     piece_start = msg.index * piece_length
                     block_start = piece_start + msg.begin
                     block_end = block_start + msg.length
 
                     if corrupt_first_piece and not first_piece_sent and msg.index == 0:
-                        # Envia bloco propositalmente corrompido na primeira vez
+                        # Send intentionally corrupted block on first attempt
                         block_data = b"Z" * msg.length
                         first_piece_sent = True
                     else:
                         block_data = torrent_data[block_start:block_end]
 
-                    # Envia a resposta Piece
+                    # Send Piece response
                     resp_piece = PieceMessage(
                         index=msg.index,
                         begin=msg.begin,
@@ -172,11 +172,11 @@ def run_mock_peer_server(
 
 
 class TestTorrentClientIntegration(unittest.TestCase):
-    """Testes de integração ponta a ponta do fluxo de download do cliente."""
+    """End-to-end integration tests for client download flow."""
 
     def setUp(self):
-        # Cria dados simulados de um arquivo de 65.000 bytes (~64 KB)
-        # Dividido em 3 peças (peças de 24.000 bytes cada, última de 17.000 bytes)
+        # Create simulated data for a 65,000-byte (~64 KB) file
+        # Divided into 3 pieces (24,000 bytes each, last is 17,000 bytes)
         self.raw_file_content = b"".join(bytes([i % 256]) * 1000 for i in range(65))  # 65000 bytes
         self.piece_length = 24000
         self.block_size = 8192
@@ -190,7 +190,7 @@ class TestTorrentClientIntegration(unittest.TestCase):
         self.p2_hash = compute_sha1(p2)
         self.pieces_bytes = self.p0_hash + self.p1_hash + self.p2_hash
 
-        # Metadados .torrent Single-File
+        # Single-File .torrent metadata
         self.single_info_dict = {
             b"length": 65000,
             b"name": b"test_payload.bin",
@@ -211,7 +211,7 @@ class TestTorrentClientIntegration(unittest.TestCase):
         """
         s_client, s_server = socket.socketpair()
 
-        # Inicia thread do peer simulado
+        # Start simulated peer thread
         peer_thread = threading.Thread(
             target=run_mock_peer_server,
             kwargs={
@@ -225,7 +225,7 @@ class TestTorrentClientIntegration(unittest.TestCase):
         peer_thread.daemon = True
         peer_thread.start()
 
-        # Configura Mock do Tracker HTTP para retornar o IP/porta do peer
+        # Configure HTTP Tracker Mock to return peer IP/port
         peer_compact = socket.inet_aton("127.0.0.1") + struct.pack("!H", 6881)
         tracker_response_bencoded = encode_bencode({
             b"interval": 1800,
@@ -250,29 +250,29 @@ class TestTorrentClientIntegration(unittest.TestCase):
             def on_progress(p: DownloadProgress):
                 progress_updates.append(p)
 
-            # Usa conexão direta de socketpair
+            # Use direct socketpair connection
             conn = PeerConnection(sock=s_client, default_timeout=5.0)
             conn.perform_handshake(
                 info_hash=client.info_hash,
                 peer_id=client.peer_id,
             )
 
-            # Executa o ciclo de download
+            # Run download cycle
             success = client.download_from_peer_connection(conn, on_progress=on_progress)
             conn.close()
 
-            # Finaliza o download (grava em disco e valida)
+            # Finalize download (save to disk and validate)
             downloaded_bytes = client._finalize_download()
 
             self.assertTrue(success)
             self.assertTrue(client.is_complete)
             self.assertEqual(downloaded_bytes, self.raw_file_content)
 
-            # Valida gravação do arquivo em disco
+            # Validate file saved to disk
             self.assertTrue(out_file.exists())
             self.assertEqual(out_file.read_bytes(), self.raw_file_content)
 
-            # Valida progresso
+            # Validate progress
             self.assertTrue(len(progress_updates) > 0)
             last_p = client.get_progress()
             self.assertTrue(last_p.is_complete)
@@ -285,15 +285,15 @@ class TestTorrentClientIntegration(unittest.TestCase):
 
     def test_full_download_flow_multi_file(self):
         """
-        Testa o fluxo funcional de download e reconstrução de um torrent multi-file
-        com subdiretórios e múltiplos arquivos.
+        Tests functional download flow and reconstruction of a multi-file torrent
+        with subdirectories and multiple files.
         """
         f1_content = b"FILE_ONE_DATA_123456"  # 20 bytes
         f2_content = b"FILE_TWO_DATA_7890123456789012"  # 30 bytes
         f3_content = b"FILE_THREE_CONTENT_XYZ"  # 22 bytes
         multi_content = f1_content + f2_content + f3_content  # 72 bytes total
 
-        piece_len = 36  # 2 peças de 36 bytes
+        piece_len = 36  # 2 pieces of 36 bytes
         p0_hash = compute_sha1(multi_content[:36])
         p1_hash = compute_sha1(multi_content[36:])
 
@@ -347,7 +347,7 @@ class TestTorrentClientIntegration(unittest.TestCase):
             self.assertTrue(success)
             self.assertEqual(all_data, multi_content)
 
-            # Verifica se cada arquivo individual foi escrito na estrutura correta de diretórios
+            # Verify each individual file was written to the correct directory structure
             base_dir = out_dir / "my_dataset"
             file1_path = base_dir / "docs" / "file1.txt"
             file2_path = base_dir / "docs" / "file2.txt"
@@ -366,9 +366,9 @@ class TestTorrentClientIntegration(unittest.TestCase):
 
     def test_corrupted_piece_retry_and_recovery(self):
         """
-        Testa recuperação automática quando um peer envia um bloco corrompido.
-        O PieceManager descarta a peça, o TorrentClient re-solicita os blocos
-        e conclui com sucesso quando o dado correto é entregue.
+        Tests automatic recovery when a peer sends a corrupted block.
+        PieceManager discards piece, TorrentClient re-requests blocks,
+        and completes successfully once correct data is delivered.
         """
         s_client, s_server = socket.socketpair()
 
@@ -380,7 +380,7 @@ class TestTorrentClientIntegration(unittest.TestCase):
                 "server_peer_id": b"-UT2210-peer12345678",
                 "torrent_data": self.raw_file_content,
                 "piece_length": self.piece_length,
-                "corrupt_first_piece": True,  # Envia bloco inválido na 1ª tentativa
+                "corrupt_first_piece": True,  # Send invalid block on 1st attempt
             },
         )
         peer_thread.daemon = True
@@ -394,7 +394,7 @@ class TestTorrentClientIntegration(unittest.TestCase):
         conn = PeerConnection(sock=s_client, default_timeout=5.0)
         conn.perform_handshake(info_hash=client.info_hash, peer_id=client.peer_id)
 
-        # O ciclo deve re-solicitar a peça corrompida e concluir 100%
+        # The cycle must re-request corrupted piece and reach 100%
         success = client.download_from_peer_connection(conn)
         conn.close()
 
@@ -441,7 +441,7 @@ class TestTorrentClientIntegration(unittest.TestCase):
         peer_thread.join(timeout=2.0)
 
     def test_discover_peers_success_and_error(self):
-        # 1. Tracker retorna peers válidos
+        # 1. Tracker returns valid peers
         peer_compact = socket.inet_aton("192.168.1.100") + struct.pack("!H", 6881)
         resp_bencoded = encode_bencode({b"interval": 900, b"peers": peer_compact})
 
@@ -454,7 +454,7 @@ class TestTorrentClientIntegration(unittest.TestCase):
         self.assertEqual(peers[0].ip, "192.168.1.100")
         self.assertEqual(peers[0].port, 6881)
 
-        # 2. Tracker retorna erro
+        # 2. Tracker returns error
         fail_bencoded = encode_bencode({b"failure reason": b"unregistered torrent"})
 
         def mock_opener_fail(req, timeout=15.0):
@@ -465,7 +465,7 @@ class TestTorrentClientIntegration(unittest.TestCase):
             client_fail.discover_peers()
 
     def test_download_incomplete_error(self):
-        # Nenhum peer disponível
+        # No peers available
         client = TorrentClient(self.single_torrent_meta)
         with self.assertRaises(DownloadError):
             client.download(peers=[])

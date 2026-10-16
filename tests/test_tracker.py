@@ -1,16 +1,16 @@
 """
-Testes unitários abrangentes para o módulo de comunicação com trackers HTTP.
+Comprehensive unit tests for HTTP tracker communication module.
 
-Cobre:
-- Construção correta da URL de announce com parâmetros obrigatórios e opcionais;
-- URL encoding rigoroso de hashes binários e peer IDs (RFC 3986 percent-encoding);
-- Parsing de respostas Bencoded válidas com intervalo e metadados adicionais;
-- Extração de peers compactados em IPv4 (BEP 0023);
-- Extração de peers no formato tradicional de dicionários/listas (BEP 0003);
-- Tratamento de 'failure reason' e avisos ('warning message');
-- Rejeição de respostas inválidas, malformadas ou incompletas;
-- Simulação de erros de rede, timeouts e erros HTTP sem depender da Internet real;
-- Testes do cliente de alto nível HTTPTrackerClient.
+Covers:
+- Correct announce URL construction with mandatory and optional parameters;
+- Strict URL encoding of binary hashes and peer IDs (RFC 3986 percent-encoding);
+- Parsing valid Bencoded responses with interval and additional metadata;
+- Compact IPv4 peer extraction (BEP 0023);
+- Dictionary/list traditional peer format extraction (BEP 0003);
+- Handling of 'failure reason' and 'warning message';
+- Rejection of invalid, malformed, or incomplete responses;
+- Simulation of network errors, timeouts, and HTTP errors without relying on real Internet;
+- Tests of high-level HTTPTrackerClient.
 """
 
 import gzip
@@ -63,7 +63,7 @@ class MockHTTPResponse:
 
 
 class TestAnnounceUrlBuilder(unittest.TestCase):
-    """Testes para construção e encoding da URL de announce."""
+    """Tests for announce URL construction and encoding."""
 
     def setUp(self):
         self.info_hash = b"\x12\x34\x56\x78\x9a\xbc\xde\xf0\x12\x34\x56\x78\x9a\xbc\xde\xf0\x12\x34\x56\x78"
@@ -83,7 +83,7 @@ class TestAnnounceUrlBuilder(unittest.TestCase):
         )
 
         self.assertTrue(url.startswith(self.base_url + "?"))
-        # Verifica a presença e formatação de cada parâmetro na query string
+        # Verify presence and formatting of each parameter in query string
         self.assertIn("info_hash=%124Vx%9A%BC%DE%F0%124Vx%9A%BC%DE%F0%124Vx", url)
         self.assertIn("peer_id=-ST0001-1234567890ab", url)
         self.assertIn("port=6881", url)
@@ -93,8 +93,8 @@ class TestAnnounceUrlBuilder(unittest.TestCase):
         self.assertIn("compact=1", url)
 
     def test_urlencode_binary_special_bytes(self):
-        # Garante que caracteres especiais, espaços (%20), mais (%2B), bytes nulos (%00) e 0xFF
-        # sejam percent-encoded estritamente sem perder integridade
+        # Ensure special characters, spaces (%20), plus (%2B), null bytes (%00) and 0xFF
+        # are strictly percent-encoded without losing integrity
         special_bytes = b"\x00\x20\x2b\x3f\x26\x3d\xff" + b"abc-._~"
         encoded = urlencode_binary(special_bytes)
         self.assertEqual(encoded, "%00%20%2B%3F%26%3D%FFabc-._~")
@@ -110,7 +110,7 @@ class TestAnnounceUrlBuilder(unittest.TestCase):
         self.assertTrue(url.startswith("http://tracker.example.com/announce?passkey=secret123&"))
         self.assertIn("info_hash=", url)
 
-        # Base terminando com '?'
+        # Base ending with '?'
         base_with_question = "http://tracker.example.com/announce?"
         url_q = build_announce_url(
             base_url=base_with_question,
@@ -154,29 +154,29 @@ class TestAnnounceUrlBuilder(unittest.TestCase):
         self.assertIn(f"peer_id={peer_id_str}", url)
 
     def test_invalid_parameters_raise_errors(self):
-        # Base url vazia
+        # Empty base url
         with self.assertRaises(ValueError):
             build_announce_url("", self.info_hash, self.peer_id)
 
-        # info_hash com tamanho incorreto
+        # info_hash with incorrect size
         with self.assertRaises(ValueError):
             build_announce_url(self.base_url, b"short_hash", self.peer_id)
 
-        # info_hash não-bytes
+        # info_hash non-bytes
         with self.assertRaises(TypeError):
             build_announce_url(self.base_url, "not_bytes", self.peer_id)  # type: ignore
 
-        # peer_id com tamanho incorreto
+        # peer_id with incorrect size
         with self.assertRaises(ValueError):
             build_announce_url(self.base_url, self.info_hash, b"short_peer_id")
 
-        # Porta inválida
+        # Invalid port
         with self.assertRaises(ValueError):
             build_announce_url(self.base_url, self.info_hash, self.peer_id, port=0)
         with self.assertRaises(ValueError):
             build_announce_url(self.base_url, self.info_hash, self.peer_id, port=70000)
 
-        # Valores negativos
+        # Negative values
         with self.assertRaises(ValueError):
             build_announce_url(self.base_url, self.info_hash, self.peer_id, uploaded=-1)
         with self.assertRaises(ValueError):
@@ -188,7 +188,7 @@ class TestAnnounceUrlBuilder(unittest.TestCase):
 
 
 class TestPeerExtraction(unittest.TestCase):
-    """Testes para extração de peers compactados (IPv4) e em dicionários."""
+    """Tests for compact (IPv4) and dictionary peer extraction."""
 
     def test_parse_compact_peers_single(self):
         # 127.0.0.1:6881 -> \x7f\x00\x00\x01 \x1a\xe1
@@ -219,10 +219,10 @@ class TestPeerExtraction(unittest.TestCase):
         self.assertEqual(peers, [])
 
     def test_parse_compact_peers_invalid_length(self):
-        # 5 bytes (não divisível por 6)
+        # 5 bytes (not divisible by 6)
         with self.assertRaises(TrackerResponseError) as ctx:
             parse_compact_peers_ipv4(b"\x01\x02\x03\x04\x05")
-        self.assertIn("não é múltiplo de 6", str(ctx.exception))
+        self.assertIn("is not a multiple of 6", str(ctx.exception))
 
         # 7 bytes
         with self.assertRaises(TrackerResponseError):
@@ -253,31 +253,31 @@ class TestPeerExtraction(unittest.TestCase):
         self.assertIsNone(peers[1].peer_id)
 
     def test_parse_dictionary_peers_invalid(self):
-        # Elemento não é dict
+        # Element is not dict
         with self.assertRaises(TrackerResponseError):
             parse_dictionary_peers(["not_a_dict"])  # type: ignore
 
-        # Falta ip
+        # Missing ip
         with self.assertRaises(TrackerResponseError):
             parse_dictionary_peers([{b"port": 6881}])
 
-        # Falta port
+        # Missing port
         with self.assertRaises(TrackerResponseError):
             parse_dictionary_peers([{b"ip": b"1.1.1.1"}])
 
-        # Porta inválida
+        # Invalid port
         with self.assertRaises(TrackerResponseError):
             parse_dictionary_peers([{b"ip": b"1.1.1.1", b"port": 0}])
         with self.assertRaises(TrackerResponseError):
             parse_dictionary_peers([{b"ip": b"1.1.1.1", b"port": 70000}])
 
-        # IP vazio
+        # Empty IP
         with self.assertRaises(TrackerResponseError):
             parse_dictionary_peers([{b"ip": b"", b"port": 6881}])
 
 
 class TestTrackerResponseParser(unittest.TestCase):
-    """Testes para o parsing e validação de respostas completas do tracker."""
+    """Tests for parsing and validation of full tracker responses."""
 
     def test_parse_valid_compact_response(self):
         peer1_bytes = socket.inet_aton("192.168.0.1") + struct.pack("!H", 6881)
@@ -336,26 +336,26 @@ class TestTrackerResponseParser(unittest.TestCase):
         self.assertEqual(ctx.exception.failure_reason, "Torrent not registered with this private tracker")
 
     def test_parse_invalid_responses(self):
-        # Buffer vazio
+        # Empty buffer
         with self.assertRaises(TrackerResponseError):
             parse_tracker_response(b"")
 
-        # Não é Bencode válido (HTML de erro, por exemplo)
+        # Not valid Bencode (e.g. error HTML)
         with self.assertRaises(TrackerResponseError) as ctx:
             parse_tracker_response(b"<html><body>502 Bad Gateway</body></html>")
-        self.assertIn("Erro ao decodificar Bencode", str(ctx.exception))
+        self.assertIn("Error decoding Bencode", str(ctx.exception))
 
-        # Raiz não é dicionário
+        # Root is not a dictionary
         with self.assertRaises(TrackerResponseError):
             parse_tracker_response(encode_bencode([b"item1", b"item2"]))
 
-        # Sem campo interval
+        # Missing interval field
         no_interval = encode_bencode({b"peers": b""})
         with self.assertRaises(TrackerResponseError) as ctx:
             parse_tracker_response(no_interval)
-        self.assertIn("Campo obrigatório 'interval'", str(ctx.exception))
+        self.assertIn("Required 'interval' field", str(ctx.exception))
 
-        # Interval inválido (<= 0 ou tipo incorreto)
+        # Invalid interval (<= 0 or incorrect type)
         bad_interval = encode_bencode({b"interval": 0, b"peers": b""})
         with self.assertRaises(TrackerResponseError):
             parse_tracker_response(bad_interval)
@@ -364,14 +364,14 @@ class TestTrackerResponseParser(unittest.TestCase):
         with self.assertRaises(TrackerResponseError):
             parse_tracker_response(bad_interval_type)
 
-        # Peers com tipo inválido
+        # Peers with invalid type
         bad_peers_type = encode_bencode({b"interval": 1800, b"peers": 12345})
         with self.assertRaises(TrackerResponseError):
             parse_tracker_response(bad_peers_type)
 
 
 class TestNetworkExecutionAndMocks(unittest.TestCase):
-    """Testes para requisições HTTP simuladas com mock opener e abstrações de teste."""
+    """Tests for simulated HTTP requests with mock opener and test abstractions."""
 
     def setUp(self):
         self.info_hash = b"01234567890123456789"
@@ -383,7 +383,7 @@ class TestNetworkExecutionAndMocks(unittest.TestCase):
         resp_data = encode_bencode({b"interval": 900, b"peers": peer_bytes})
 
         def mock_opener(req, timeout=15.0):
-            # Valida headers e URL da requisição
+            # Validate headers and request URL
             self.assertIn("SimpleBitTorrent", req.headers.get("User-agent"))
             self.assertIn("info_hash=", req.full_url)
             return MockHTTPResponse(resp_data)
@@ -428,7 +428,7 @@ class TestNetworkExecutionAndMocks(unittest.TestCase):
         self.assertIn("404", str(ctx.exception))
 
     def test_http_error_with_bencoded_failure_reason(self):
-        # Servidor retorna 400 Bad Request mas com corpo Bencoded 'failure reason'
+        # Server returns 400 Bad Request but with Bencoded 'failure reason' body
         fail_body = encode_bencode({b"failure reason": b"invalid passkey provided"})
 
         def mock_opener_400_bencode(req, timeout=15.0):
@@ -471,14 +471,14 @@ class TestNetworkExecutionAndMocks(unittest.TestCase):
 
 
 class TestHTTPTrackerClient(unittest.TestCase):
-    """Testes para o cliente de alto nível HTTPTrackerClient."""
+    """Tests for high-level HTTPTrackerClient."""
 
     def setUp(self):
         self.info_dict = {
             b"length": 1048576,  # 1 MB
             b"name": b"sample.iso",
             b"piece length": 262144,
-            b"pieces": b"A" * 80,  # 4 peças
+            b"pieces": b"A" * 80,  # 4 pieces
         }
         self.torrent_dict = {
             b"announce": b"http://tracker.sample.org/announce",
@@ -495,11 +495,11 @@ class TestHTTPTrackerClient(unittest.TestCase):
         self.assertEqual(len(client.peer_id), 20)
 
     def test_client_init_from_bytes_and_file(self):
-        # A partir de bytes brutos
+        # From raw bytes
         client_bytes = HTTPTrackerClient(self.torrent_bytes)
         self.assertEqual(client_bytes.info_hash, self.metadata.info_hash)
 
-        # A partir de arquivo em disco
+        # From disk file
         with tempfile.TemporaryDirectory() as tmpdir:
             file_path = Path(tmpdir) / "test.torrent"
             file_path.write_bytes(self.torrent_bytes)
@@ -534,26 +534,26 @@ class TestHTTPTrackerClient(unittest.TestCase):
 
         client = HTTPTrackerClient(self.metadata, opener=mock_opener)
 
-        # 1. Evento 'started'
+        # 1. 'started' event
         resp_start = client.start(uploaded=0, downloaded=0)
         self.assertEqual(resp_start.interval, 1800)
         self.assertEqual(client.last_tracker_id, "session_123")
         self.assertIn("event=started", captured_requests[-1])
         self.assertIn("left=1048576", captured_requests[-1])
 
-        # 2. Announce regular (deve reenviar trackerid='session_123' e left recalculado)
+        # 2. Regular announce (must resend trackerid='session_123' and recalculated left)
         resp_reg = client.announce(uploaded=50000, downloaded=100000)
         self.assertIn("trackerid=session_123", captured_requests[-1])
         self.assertIn("uploaded=50000", captured_requests[-1])
         self.assertIn("downloaded=100000", captured_requests[-1])
         self.assertIn("left=948576", captured_requests[-1])  # 1048576 - 100000
 
-        # 3. Evento 'completed'
+        # 3. 'completed' event
         resp_comp = client.complete(uploaded=100000, downloaded=1048576)
         self.assertIn("event=completed", captured_requests[-1])
         self.assertIn("left=0", captured_requests[-1])
 
-        # 4. Evento 'stopped'
+        # 4. 'stopped' event
         resp_stop = client.stop(uploaded=100000, downloaded=1048576)
         self.assertIn("event=stopped", captured_requests[-1])
 
@@ -561,7 +561,7 @@ class TestHTTPTrackerClient(unittest.TestCase):
         client = HTTPTrackerClient(info_hash=b"Z" * 20)
         with self.assertRaises(ValueError) as ctx:
             client.announce()
-        self.assertIn("Nenhuma URL de announce", str(ctx.exception))
+        self.assertIn("No announce URL provided", str(ctx.exception))
 
     def test_generate_peer_id(self):
         pid = generate_peer_id("-AZ4000-")

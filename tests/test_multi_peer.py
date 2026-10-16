@@ -1,15 +1,15 @@
 """
-Testes abrangentes de concorrência com múltiplos peers simultâneos para o TorrentClient.
+Comprehensive concurrency tests with multiple simultaneous peers for TorrentClient.
 
-Cobre:
-1. Conexão e download concorrente a partir de múltiplos peers simultaneamente;
-2. Rastreamento correto de posse de peças individuais (Bitfield e Have) para distribuição direcionada de requests;
-3. Respeito estrito aos limites de requisições em voo por peer (Pipelining / max_in_flight);
-4. Ausência de requisições duplicadas simultâneas para o mesmo bloco;
-5. Tratamento de peers que desconectam / desaparecem no meio do download (isolamento e re-enfileiramento de blocos);
-6. Tratamento de Choke dinâmico em conexões concorrentes;
-7. Broadcast de mensagens Have para todos os peers conectados ao concluir a validação de cada peça;
-8. Processamento e rotação de fila de peers em pool de workers concorrentes.
+Covers:
+1. Connection and concurrent download from multiple peers simultaneously;
+2. Correct tracking of individual piece possession (Bitfield and Have) for targeted request routing;
+3. Strict adherence to in-flight request limits per peer (Pipelining / max_in_flight);
+4. Absence of duplicate simultaneous requests for the same block;
+5. Handling of peers that disconnect / drop mid-download (isolation and re-queuing of blocks);
+6. Handling of dynamic Choke in concurrent connections;
+7. Broadcast of Have messages to all connected peers upon validating each piece;
+8. Processing and queue rotation of peers across concurrent worker pool.
 """
 
 import queue
@@ -53,7 +53,7 @@ from src.tracker import PeerInfo
 
 class MockPeerHandler:
     """
-    Controlador configurável para simulação de peer em thread dedicada.
+    Configurable controller for peer simulation in dedicated thread.
     """
 
     def __init__(
@@ -141,14 +141,14 @@ class MockPeerHandler:
                             continue
 
                         if self.drop_after_blocks is not None and self.blocks_sent >= self.drop_after_blocks:
-                            # Encerra abruptamente a conexão
+                            # Abruptly terminate connection
                             self.sock.close()
                             return
 
                         if self.delay_per_block > 0:
                             time.sleep(self.delay_per_block)
 
-                        # Envia Piece
+                        # Send Piece
                         p_start = msg.index * self.piece_length
                         b_start = p_start + msg.begin
                         b_end = b_start + msg.length
@@ -173,17 +173,17 @@ class MockPeerHandler:
 
 
 class TestMultiPeerDownload(unittest.TestCase):
-    """Testes com múltiplos peers concorrentes para o TorrentClient."""
+    """Tests with multiple concurrent peers for TorrentClient."""
 
     def setUp(self):
-        # Cria dados para 4 peças de 16 KB cada (65.536 bytes)
-        # Cada peça terá 2 blocos de 8 KB (8192 bytes)
+        # Create data for 4 pieces of 16 KB each (65,536 bytes)
+        # Each piece will have 2 blocks of 8 KB (8192 bytes)
         self.piece_length = 16384
         self.block_size = 8192
         self.num_pieces = 4
         self.total_length = self.piece_length * self.num_pieces  # 65536 bytes
 
-        # Gera dados previsíveis
+        # Generate predictable data
         pieces_raw = [bytes([i]) * self.piece_length for i in range(self.num_pieces)]
         self.raw_data = b"".join(pieces_raw)
 
@@ -204,8 +204,8 @@ class TestMultiPeerDownload(unittest.TestCase):
 
     def test_multi_peer_concurrent_swarm_download(self):
         """
-        Testa download concorrente onde 3 peers possuem 100% do arquivo (swarm).
-        Garante que os 3 peers trabalham simultaneamente e nenhum bloco é duplicado.
+        Tests concurrent download where 3 peers have 100% of the file (swarm).
+        Ensures all 3 peers work simultaneously and no block is duplicated.
         """
         num_peers = 3
         server_handlers: List[MockPeerHandler] = []
@@ -237,7 +237,7 @@ class TestMultiPeerDownload(unittest.TestCase):
             threads.append(t)
             t.start()
 
-        # Executa conexões do cliente concorrentemente
+        # Run client connections concurrently
         client_threads: List[threading.Thread] = []
         for conn in client_conns:
             conn.perform_handshake(info_hash=client.info_hash, peer_id=client.peer_id)
@@ -259,27 +259,27 @@ class TestMultiPeerDownload(unittest.TestCase):
         for t in threads:
             t.join(timeout=2.0)
 
-        # Validações
+        # Validations
         self.assertTrue(client.is_complete)
         self.assertEqual(client.piece_manager.completed_pieces_count(), 4)
         self.assertEqual(client.piece_manager.get_all_data(), self.raw_data)
 
-        # Verifica se mais de um peer contribuiu para o download (trabalho compartilhado)
+        # Verify more than one peer contributed to download (shared work)
         contributions = [h.blocks_sent for h in server_handlers]
         total_blocks_sent = sum(contributions)
-        # Total de blocos no torrent: 4 peças * 2 blocos = 8 blocos
+        # Total blocks in torrent: 4 pieces * 2 blocks = 8 blocks
         self.assertEqual(total_blocks_sent, 8)
-        # Pelo menos 2 peers devem ter enviado blocos
+        # At least 2 peers must have sent blocks
         active_senders = sum(1 for c in contributions if c > 0)
         self.assertGreaterEqual(active_senders, 2)
 
     def test_multi_peer_disjoint_pieces_distribution(self):
         """
-        Testa distribuição de peças disjuntas entre peers:
-        - Peer 0 tem apenas peças {0, 1}
-        - Peer 1 tem apenas peças {2, 3}
-        O cliente deve solicitar peças 0 e 1 exclusivamente ao Peer 0,
-        e peças 2 e 3 exclusivamente ao Peer 1.
+        Tests distribution of disjoint pieces across peers:
+        - Peer 0 has only pieces {0, 1}
+        - Peer 1 has only pieces {2, 3}
+        Client must request pieces 0 and 1 exclusively from Peer 0,
+        and pieces 2 and 3 exclusively from Peer 1.
         """
         c_sock0, s_sock0 = socket.socketpair()
         c_sock1, s_sock1 = socket.socketpair()
@@ -333,22 +333,22 @@ class TestMultiPeerDownload(unittest.TestCase):
         self.assertTrue(client.is_complete)
         self.assertEqual(client.piece_manager.get_all_data(), self.raw_data)
 
-        # Verifica se as requisições respeitaram a posse de peças de cada peer
+        # Verify requests respected piece possession of each peer
         for req in handler0.received_requests:
             piece_idx = req[0]
-            self.assertIn(piece_idx, {0, 1}, f"Peer 0 recebeu request para peça inesperada {piece_idx}")
+            self.assertIn(piece_idx, {0, 1}, f"Peer 0 received request for unexpected piece {piece_idx}")
 
         for req in handler1.received_requests:
             piece_idx = req[0]
-            self.assertIn(piece_idx, {2, 3}, f"Peer 1 recebeu request para peça inesperada {piece_idx}")
+            self.assertIn(piece_idx, {2, 3}, f"Peer 1 received request for unexpected piece {piece_idx}")
 
     def test_disappearing_peer_failover_and_recovery(self):
         """
-        Testa recuperação quando um peer cai no meio do download:
-        - Peer 0 envia 1 bloco e cai abruptamente (drop_after_blocks=1);
-        - Peer 1 está disponível com todas as peças;
-        O cliente deve recuperar os blocos que estavam em voo no Peer 0,
-        solicitá-los ao Peer 1 e completar 100% com integridade SHA-1.
+        Tests recovery when a peer drops mid-download:
+        - Peer 0 sends 1 block and drops abruptly (drop_after_blocks=1);
+        - Peer 1 is available with all pieces;
+        Client must recover in-flight blocks from Peer 0,
+        request them from Peer 1, and complete 100% with SHA-1 integrity.
         """
         c_sock0, s_sock0 = socket.socketpair()
         c_sock1, s_sock1 = socket.socketpair()
@@ -365,7 +365,7 @@ class TestMultiPeerDownload(unittest.TestCase):
             peer_id=b"-UT2210-peerFAIL1111",
             torrent_data=self.raw_data,
             piece_length=self.piece_length,
-            drop_after_blocks=1,  # Cai após enviar 1 bloco
+            drop_after_blocks=1,  # Drops after sending 1 block
         )
         handler_reliable = MockPeerHandler(
             sock=s_sock1,
@@ -398,17 +398,17 @@ class TestMultiPeerDownload(unittest.TestCase):
         t0.join(timeout=2.0)
         t1.join(timeout=2.0)
 
-        # O download deve ter sido completado com sucesso graças ao failover
+        # Download must complete successfully thanks to failover
         self.assertTrue(client.is_complete)
         self.assertEqual(client.piece_manager.get_all_data(), self.raw_data)
-        # Peer confiável deve ter enviado os 7 blocos restantes
+        # Reliable peer must have sent remaining 7 blocks
         self.assertEqual(handler_reliable.blocks_sent, 7)
 
     def test_choke_release_and_peer_reassignment(self):
         """
-        Testa liberação de blocos em voo quando um peer envia Choke:
-        - Peer 0 envia 2 blocos e depois envia Choke;
-        - Peer 1 assume os blocos pendentes e finaliza o download.
+        Tests release of in-flight blocks when a peer sends Choke:
+        - Peer 0 sends 2 blocks and then sends Choke;
+        - Peer 1 takes over pending blocks and completes download.
         """
         c_sock0, s_sock0 = socket.socketpair()
         c_sock1, s_sock1 = socket.socketpair()
@@ -463,8 +463,8 @@ class TestMultiPeerDownload(unittest.TestCase):
 
     def test_broadcast_have_messages_to_all_peers(self):
         """
-        Testa se ao completar o download e validação SHA-1 de cada peça,
-        uma mensagem Have(piece_index) é transmitida a todos os peers conectados.
+        Tests whether upon completing download and SHA-1 validation of each piece,
+        a Have(piece_index) message is broadcast to all connected peers.
         """
         c_sock0, s_sock0 = socket.socketpair()
         c_sock1, s_sock1 = socket.socketpair()
@@ -475,7 +475,7 @@ class TestMultiPeerDownload(unittest.TestCase):
             max_in_flight=1,
         )
 
-        # Peer 0 fornece os dados
+        # Peer 0 provides data
         handler_sender = MockPeerHandler(
             sock=s_sock0,
             info_hash=client.info_hash,
@@ -484,7 +484,7 @@ class TestMultiPeerDownload(unittest.TestCase):
             piece_length=self.piece_length,
             delay_per_block=0.01,
         )
-        # Peer 1 não possui peças, apenas escuta
+        # Peer 1 has no pieces, only listens
         handler_listener = MockPeerHandler(
             sock=s_sock1,
             info_hash=client.info_hash,
@@ -518,20 +518,20 @@ class TestMultiPeerDownload(unittest.TestCase):
         t1.join(timeout=2.0)
 
         self.assertTrue(client.is_complete)
-        # O listener deve ter recebido as notificações Have para as peças completadas (0, 1, 2, 3)
+        # The listener must have received Have notifications for completed pieces (0, 1, 2, 3)
         self.assertGreaterEqual(len(handler_listener.received_haves), 1)
         for piece_idx in handler_listener.received_haves:
             self.assertIn(piece_idx, range(self.num_pieces))
 
     def test_peer_pool_dispatch_and_worker_rotation(self):
         """
-        Testa o método download() com pool de workers e rotação de fila:
-        - 4 peers disponíveis na lista;
+        Tests download() method with worker pool and queue rotation:
+        - 4 peers available in list;
         - max_workers = 2;
-        - Peer 0 e 1 falham na conexão;
-        - Workers automaticamente pegam Peer 2 e 3 e concluem o download.
+        - Peer 0 and 1 fail connection;
+        - Workers automatically pick Peer 2 and 3 and complete download.
         """
-        # Criamos um mock socket server real em portas locais
+        # Create real mock socket servers on local ports
         srv2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv2.bind(("127.0.0.1", 0))
         srv2.listen(1)
@@ -565,10 +565,10 @@ class TestMultiPeerDownload(unittest.TestCase):
         t2.start()
         t3.start()
 
-        # Lista com 2 peers que falharão (portas fechadas) e 2 peers reais
+        # List with 2 peers that will fail (closed ports) and 2 real peers
         peers_list = [
-            PeerInfo(ip="127.0.0.1", port=1),  # Porta inacessível
-            PeerInfo(ip="127.0.0.1", port=2),  # Porta inacessível
+            PeerInfo(ip="127.0.0.1", port=1),  # Unreachable port
+            PeerInfo(ip="127.0.0.1", port=2),  # Unreachable port
             PeerInfo(ip="127.0.0.1", port=port2),
             PeerInfo(ip="127.0.0.1", port=port3),
         ]

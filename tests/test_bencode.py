@@ -1,18 +1,18 @@
 """
-Testes unitários abrangentes para o parser e serializador Bencode (BEP 0003).
+Comprehensive unit tests for Bencode parser and serializer (BEP 0003).
 
-Cobre:
-- Valores simples (inteiros positivos, negativos, zero, big ints, strings);
-- Estruturas aninhadas (listas/dicts multinível);
-- Dicionários (ordenação lexicográfica estrita, chaves únicas, chaves byte strings);
-- Listas (homogêneas, heterogêneas, aninhadas);
-- Valores vazios (strings, listas, dicts vazios, int 0);
-- Dados inválidos (sintaxe, formatos proibidos, tipos de entrada errados);
-- Dados truncados (detecção explícita via BencodeTruncatedError);
-- Caracteres binários (bytes nulos, range 0x00-0xFF, hashes SHA-1 de 20 bytes);
-- Estruturas grandes (milhares de itens, megabytes de payload);
-- Identificação exata de fatias (offsets da seção 'info' para cálculo de info_hash);
-- Encoding e roundtrip de tipos suportados.
+Covers:
+- Simple values (positive/negative integers, zero, big ints, strings);
+- Nested structures (multi-level lists/dicts);
+- Dictionaries (strict lexicographical ordering, unique keys, byte string keys);
+- Lists (homogeneous, heterogeneous, nested);
+- Empty values (empty strings, lists, dicts, int 0);
+- Invalid data (syntax, forbidden formats, incorrect input types);
+- Truncated data (explicit detection via BencodeTruncatedError);
+- Binary characters (null bytes, 0x00-0xFF range, 20-byte SHA-1 hashes);
+- Large structures (thousands of items, megabytes of payload);
+- Exact slice identification ('info' section offsets for info_hash computation);
+- Supported types encoding and roundtrip.
 """
 
 import hashlib
@@ -33,7 +33,7 @@ from src.bencode import (
 
 
 class TestBencodeIntegers(unittest.TestCase):
-    """Testes para decodificação e validação de inteiros Bencode."""
+    """Tests for Bencode integer decoding and validation."""
 
     def test_valid_integers(self):
         self.assertEqual(decode_bencode(b"i0e"), 0)
@@ -45,7 +45,7 @@ class TestBencodeIntegers(unittest.TestCase):
         self.assertEqual(decode_bencode(b"i-9876543210e"), -9876543210)
 
     def test_large_integers(self):
-        # Inteiros arbitrariamente grandes (além de 64 bits)
+        # Arbitrarily large integers (beyond 64 bits)
         big_int = 1234567890123456789012345678901234567890
         raw = f"i{big_int}e".encode('ascii')
         self.assertEqual(decode_bencode(raw), big_int)
@@ -55,19 +55,19 @@ class TestBencodeIntegers(unittest.TestCase):
         self.assertEqual(decode_bencode(raw_neg), neg_big_int)
 
     def test_invalid_integers_syntax(self):
-        # Sinal '+' proibido
+        # Leading '+' sign forbidden
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"i+42e")
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"i+0e")
 
-        # Zero negativo '-0' e '-00' proibidos
+        # Negative zero '-0' and '-00' forbidden
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"i-0e")
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"i-00e")
 
-        # Zeros à esquerda proibidos (exceto '0')
+        # Leading zeros forbidden (except '0')
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"i03e")
         with self.assertRaises(BencodeDecodeError):
@@ -77,13 +77,13 @@ class TestBencodeIntegers(unittest.TestCase):
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"i-007e")
 
-        # Inteiro sem dígitos
+        # Integer with no digits
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"ie")
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"i-e")
 
-        # Caracteres não-numéricos ou pontuação
+        # Non-numeric characters or punctuation
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"i12a3e")
         with self.assertRaises(BencodeDecodeError):
@@ -95,7 +95,7 @@ class TestBencodeIntegers(unittest.TestCase):
 
 
 class TestBencodeByteStrings(unittest.TestCase):
-    """Testes para decodificação e validação de byte strings Bencode."""
+    """Tests for Bencode byte string decoding and validation."""
 
     def test_valid_strings(self):
         self.assertEqual(decode_bencode(b"4:spam"), b"spam")
@@ -104,7 +104,7 @@ class TestBencodeByteStrings(unittest.TestCase):
         self.assertEqual(decode_bencode(b"5:12345"), b"12345")
 
     def test_bytes_type_guarantee(self):
-        # Garante que o retorno é SEMPRE bytes, nunca str
+        # Ensure return is ALWAYS bytes, never str
         res = decode_bencode(b"4:spam")
         self.assertIsInstance(res, bytes)
         self.assertNotIsInstance(res, str)
@@ -114,19 +114,19 @@ class TestBencodeByteStrings(unittest.TestCase):
         self.assertEqual(empty_res, b"")
 
     def test_invalid_string_length_syntax(self):
-        # Zero à esquerda no tamanho
+        # Leading zero in length
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"04:spam")
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"00:")
 
-        # Sinais no tamanho
+        # Signs in length
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"-4:spam")
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"+4:spam")
 
-        # Caracteres inválidos ou ausência de tamanho
+        # Invalid characters or missing length
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b":spam")
         with self.assertRaises(BencodeDecodeError):
@@ -151,13 +151,13 @@ class TestBencodeLists(unittest.TestCase):
         self.assertEqual(decode_bencode(b"llelelee"), [[], [], []])
 
     def test_invalid_list_element(self):
-        # Elemento com caractere desconhecido dentro da lista
+        # Element with unknown character inside list
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"li1exi2ee")
 
 
 class TestBencodeDictionaries(unittest.TestCase):
-    """Testes para dicionários Bencode e validação BEP 0003."""
+    """Tests for Bencode dictionaries and BEP 0003 validation."""
 
     def test_valid_dictionaries(self):
         self.assertEqual(decode_bencode(b"de"), {})
@@ -171,40 +171,40 @@ class TestBencodeDictionaries(unittest.TestCase):
         )
 
     def test_lexicographical_byte_ordering(self):
-        # 'aa' vem antes de 'b' em ordem byte-a-byte
+        # 'aa' comes before 'b' in byte-by-byte order
         raw = b"d2:aa1:11:b1:2e"
         self.assertEqual(decode_bencode(raw), {b"aa": b"1", b"b": b"2"})
 
-        # Chaves fora de ordem lexicográfica devem lançar erro
+        # Keys out of lexicographical order must raise error
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"d1:b1:22:aa1:1e")
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"d3:zeta1:a3:alpha1:be")
 
     def test_duplicate_keys_forbidden(self):
-        # Chaves duplicadas não são permitidas
+        # Duplicate keys are not allowed
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"d3:foo1:a3:foo1:be")
 
     def test_non_string_keys_forbidden(self):
-        # Chave inteira
+        # Integer key
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"di42e4:spame")
-        # Chave lista
+        # List key
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"dle4:spame")
-        # Chave dicionário
+        # Dictionary key
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"dde4:spame")
 
     def test_missing_value_in_dictionary(self):
-        # Dicionário termina após a chave sem fornecer o valor
+        # Dictionary ends after key without providing value
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"d3:fooe")
 
 
 class TestBencodeNestedStructures(unittest.TestCase):
-    """Testes com estruturas aninhadas e heterogêneas."""
+    """Tests with nested and heterogeneous structures."""
 
     def test_dict_in_dict(self):
         raw = b"d1:ad1:bi1eee"
@@ -265,7 +265,7 @@ class TestBencodeEmptyValues(unittest.TestCase):
 
 
 class TestBencodeTruncatedData(unittest.TestCase):
-    """Testes para detecção de dados truncados (BencodeTruncatedError)."""
+    """Tests for truncated data detection (BencodeTruncatedError)."""
 
     def test_empty_buffer(self):
         with self.assertRaises(BencodeTruncatedError):
@@ -282,13 +282,13 @@ class TestBencodeTruncatedData(unittest.TestCase):
             decode_bencode(b"i-100")
 
     def test_truncated_strings(self):
-        # Truncado antes ou no delimitador ':'
+        # Truncated before or at ':' delimiter
         with self.assertRaises(BencodeTruncatedError):
             decode_bencode(b"4")
         with self.assertRaises(BencodeTruncatedError):
             decode_bencode(b"100")
 
-        # Truncado no payload de bytes
+        # Truncated in byte payload
         with self.assertRaises(BencodeTruncatedError):
             decode_bencode(b"4:")
         with self.assertRaises(BencodeTruncatedError):
@@ -319,7 +319,7 @@ class TestBencodeTruncatedData(unittest.TestCase):
             decode_bencode(b"d3:fool4:spame")
 
     def test_truncated_error_inheritance(self):
-        # Garante que BencodeTruncatedError é subclasse de BencodeDecodeError e BencodeError
+        # Ensure BencodeTruncatedError is subclass of BencodeDecodeError and BencodeError
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"l4:spam")
         with self.assertRaises(BencodeError):
@@ -327,11 +327,11 @@ class TestBencodeTruncatedData(unittest.TestCase):
 
 
 class TestBencodeInvalidAndTrailingData(unittest.TestCase):
-    """Testes para validação de entradas inválidas e dados extras após o buffer."""
+    """Tests for invalid inputs validation and trailing data after buffer."""
 
     def test_invalid_input_types(self):
         with self.assertRaises(BencodeDecodeError):
-            decode_bencode("i42e")  # type: ignore (str ao invés de bytes)
+            decode_bencode("i42e")  # type: ignore (str instead of bytes)
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(12345)  # type: ignore
         with self.assertRaises(BencodeDecodeError):
@@ -350,7 +350,7 @@ class TestBencodeInvalidAndTrailingData(unittest.TestCase):
             decode_bencode(b"\xff")
 
     def test_trailing_data_in_strict_mode(self):
-        # Por padrão (strict=True), dados extras após o objeto causam erro
+        # By default (strict=True), extra data after object causes error
         with self.assertRaises(BencodeDecodeError):
             decode_bencode(b"i42eextra")
         with self.assertRaises(BencodeDecodeError):
@@ -359,13 +359,13 @@ class TestBencodeInvalidAndTrailingData(unittest.TestCase):
             decode_bencode(b"le\x00")
 
     def test_trailing_data_in_non_strict_mode(self):
-        # Com strict=False, decodifica o primeiro objeto
+        # With strict=False, decodes the first object
         val = decode_bencode(b"i42eextra", strict=False)
         self.assertEqual(val, 42)
 
 
 class TestBencodeBinaryData(unittest.TestCase):
-    """Testes para manipulação e integridade de dados binários arbitrários."""
+    """Tests for arbitrary binary data handling and integrity."""
 
     def test_null_bytes_in_string(self):
         data = b"foo\x00bar\x00\x00baz\x00"
@@ -381,7 +381,7 @@ class TestBencodeBinaryData(unittest.TestCase):
         self.assertEqual(encode_bencode(all_bytes), raw)
 
     def test_sha1_hashes(self):
-        # 10 hashes SHA-1 simulados (200 bytes no total)
+        # 10 simulated SHA-1 hashes (200 bytes total)
         hashes = [hashlib.sha1(f"piece_{i}".encode()).digest() for i in range(10)]
         pieces_raw = b"".join(hashes)
         self.assertEqual(len(pieces_raw), 200)
@@ -392,7 +392,7 @@ class TestBencodeBinaryData(unittest.TestCase):
         self.assertEqual(decoded[b"pieces"], pieces_raw)
 
     def test_binary_keys_in_dict(self):
-        # Chaves contendo bytes não-ASCII ordenadas lexicograficamente por valor de byte
+        # Keys containing non-ASCII bytes lexicographically ordered by byte value
         k1 = b"\x01\x02"
         k2 = b"\x80\xff"
         k3 = b"\xff\x00"
@@ -403,7 +403,7 @@ class TestBencodeBinaryData(unittest.TestCase):
 
 
 class TestBencodeLargeStructures(unittest.TestCase):
-    """Testes de estresse com estruturas grandes e coleções volumosas."""
+    """Stress tests with large structures and voluminous collections."""
 
     def test_large_list_of_integers(self):
         large_list = list(range(10000))
@@ -420,7 +420,7 @@ class TestBencodeLargeStructures(unittest.TestCase):
         self.assertEqual(len(decoded), 1000)
 
     def test_large_binary_payload(self):
-        # Payload binário de 1 MB
+        # 1 MB binary payload
         one_mb_data = b"X" * (1024 * 1024)
         encoded = encode_bencode(one_mb_data)
         decoded = decode_bencode(encoded)
@@ -428,7 +428,7 @@ class TestBencodeLargeStructures(unittest.TestCase):
         self.assertEqual(len(decoded), 1024 * 1024)
 
     def test_deep_nesting(self):
-        # 50 níveis de aninhamento de listas
+        # 50 levels of list nesting
         nested = 42
         for _ in range(50):
             nested = [nested]
@@ -438,7 +438,7 @@ class TestBencodeLargeStructures(unittest.TestCase):
 
 
 class TestBencodeInfoSliceTracking(unittest.TestCase):
-    """Testes dedicados à extração byte-precisa da seção 'info' para cálculo de info_hash."""
+    """Tests dedicated to byte-accurate extraction of 'info' section for info_hash calculation."""
 
     def setUp(self):
         self.info_dict = {
@@ -479,7 +479,7 @@ class TestBencodeInfoSliceTracking(unittest.TestCase):
         self.assertEqual(hashlib.sha1(extracted).digest(), self.expected_hash)
 
     def test_nested_info_key_collision_isolation(self):
-        # Garante que uma chave interna com nome 'info' não sobreponha a fatia da raiz
+        # Ensure internal key named 'info' does not overwrite root slice
         torrent_dict = {
             b"announce": b"http://tracker.org",
             b"info": {
@@ -495,7 +495,7 @@ class TestBencodeInfoSliceTracking(unittest.TestCase):
         start, end = slices[b"info"]
         extracted = raw_torrent[start:end]
 
-        # O slice extraído DEVE começar com 'd' e ser o dicionário info completo da raiz
+        # Extracted slice MUST start with 'd' and be complete root info dictionary
         self.assertTrue(extracted.startswith(b"d"))
         self.assertTrue(extracted.endswith(b"e"))
         self.assertEqual(hashlib.sha1(extracted).digest(), hashlib.sha1(encode_bencode(torrent_dict[b"info"])).digest())
@@ -513,13 +513,13 @@ class TestBencodeEncoding(unittest.TestCase):
         self.assertEqual(encode_bencode(0), b"i0e")
         self.assertEqual(encode_bencode(-99), b"i-99e")
         self.assertEqual(encode_bencode(b"spam"), b"4:spam")
-        self.assertEqual(encode_bencode("spam"), b"4:spam")  # str convertida para utf-8
+        self.assertEqual(encode_bencode("spam"), b"4:spam")  # str converted to utf-8
         self.assertEqual(encode_bencode([]), b"le")
         self.assertEqual(encode_bencode({}), b"de")
 
     def test_encode_rejects_bool(self):
-        # Em Python, bool é subclasse de int (isinstance(True, int) == True).
-        # Bencode não suporta bool e deve rejeitar explicitamente.
+        # In Python, bool is subclass of int (isinstance(True, int) == True).
+        # Bencode does not support bool and must explicitly reject.
         with self.assertRaises(BencodeEncodeError):
             encode_bencode(True)
         with self.assertRaises(BencodeEncodeError):
@@ -537,16 +537,16 @@ class TestBencodeEncoding(unittest.TestCase):
         with self.assertRaises(BencodeEncodeError):
             encode_bencode({1, 2, 3})
         with self.assertRaises(BencodeEncodeError):
-            encode_bencode({123: b"val"})  # chave não é string/bytes
+            encode_bencode({123: b"val"})  # key is not string/bytes
 
     def test_encode_detects_duplicate_keys(self):
-        # Dicionário com chaves colidindo após conversão str -> bytes
+        # Dictionary with colliding keys after str -> bytes conversion
         d = {b"key": 1, "key": 2}
         with self.assertRaises(BencodeEncodeError):
             encode_bencode(d)
 
     def test_encode_tuples_as_lists(self):
-        # Tuplas devem ser codificadas como listas Bencode
+        # Tuples must be encoded as Bencode lists
         self.assertEqual(encode_bencode((1, 2, b"three")), b"li1ei2e5:threee")
 
     def test_roundtrip_all_types(self):

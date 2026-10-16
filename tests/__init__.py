@@ -1,3 +1,3 @@
 """
-Pacote de testes unitários do cliente BitTorrent educacional.
+Unit test package for educational BitTorrent client.
 """

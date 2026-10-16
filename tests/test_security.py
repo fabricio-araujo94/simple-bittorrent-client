@@ -1,17 +1,17 @@
 """
-Suíte de Testes de Segurança e Auditoria contra Ameaças Externas (Threat Defense).
+Security and External Threat Defense Audit Test Suite (Threat Defense).
 
-Valida a proteção e imunidade do cliente BitTorrent contra:
-1. Ataques de DoS por estouro de pilha/recursão em Bencode (Recursion Depth Limit);
-2. Ataques de DoS por exaustão de memória em strings e inteiros Bencode;
-3. Vulnerabilidades de Path Traversal no nome do torrent e em segmentos multi-file;
-4. Injeção de Null Bytes e especificadores de drive em caminhos de arquivos;
-5. Tentativas de gravação arbitrária fora do diretório de destino (Directory Escape);
-6. Tentativas de SSRF e esquemas não-HTTP em URLs de trackers (file://, ftp://, etc.);
-7. Adulteração de bits sobressalentes em mensagens Bitfield (BEP 0003);
-8. Ataques de alocação excessiva com blocos gigantescos em Piece, Request e Cancel;
-9. Exaustão de memória no buffer do socket do peer (Buffer Overflow Protection);
-10. Tentativas de envenenamento de peças (Poisoned Blocks / SHA-1 Mismatch).
+Validates BitTorrent client protection and immunity against:
+1. DoS attacks via Bencode stack/recursion overflow (Recursion Depth Limit);
+2. DoS attacks via memory exhaustion in Bencode strings and integers;
+3. Path Traversal vulnerabilities in torrent name and multi-file segments;
+4. Null Byte injection and drive specifiers in file paths;
+5. Arbitrary write attempts outside destination directory (Directory Escape);
+6. SSRF attempts and non-HTTP schemes in tracker URLs (file://, ftp://, etc.);
+7. Tampering of spare bits in Bitfield messages (BEP 0003);
+8. Excessive allocation attacks with oversized blocks in Piece, Request, and Cancel;
+9. Memory exhaustion in peer socket buffer (Buffer Overflow Protection);
+10. Piece poisoning attempts (Poisoned Blocks / SHA-1 Mismatch).
 """
 
 import socket
@@ -61,39 +61,39 @@ from src.tracker import (
 
 
 class TestBencodeSecurity(unittest.TestCase):
-    """Testes de segurança para parsing de Bencode contra ataques de DoS."""
+    """Security tests for Bencode parsing against DoS attacks."""
 
     def test_bencode_recursion_depth_limit_prevents_stack_overflow(self):
-        """Valida que árvores Bencode profundamente aninhadas não causam estouro de pilha."""
+        """Validates deeply nested Bencode trees do not cause stack overflow."""
         deep_lists = b"l" * (MAX_BENCODE_DEPTH + 10) + b"i1e" + b"e" * (MAX_BENCODE_DEPTH + 10)
         with self.assertRaises(BencodeDecodeError) as ctx:
             decode_bencode(deep_lists)
-        self.assertIn("Profundidade máxima de aninhamento", str(ctx.exception))
+        self.assertIn("Maximum nesting depth", str(ctx.exception))
 
     def test_bencode_huge_int_digits_rejected(self):
-        """Valida que inteiros com quantidade excessiva de dígitos são rejeitados."""
+        """Validates integers with excessive digits are rejected."""
         huge_int = b"i" + b"9" * 100 + b"e"
         with self.assertRaises(BencodeDecodeError) as ctx:
             decode_bencode(huge_int)
-        self.assertIn("excede o limite seguro", str(ctx.exception))
+        self.assertIn("exceeds safe limit", str(ctx.exception))
 
     def test_bencode_huge_string_length_rejected(self):
-        """Valida que declarações de tamanhos absurdos de string são rejeitadas."""
-        huge_str_decl = b"200000000:abc"  # Declara 200 MB
+        """Validates absurd string length declarations are rejected."""
+        huge_str_decl = b"200000000:abc"  # Declares 200 MB
         with self.assertRaises(BencodeDecodeError) as ctx:
             decode_bencode(huge_str_decl)
-        self.assertIn("excede o limite máximo permitido", str(ctx.exception))
+        self.assertIn("exceeds maximum allowed limit", str(ctx.exception))
 
 
 class TestPathTraversalSecurity(unittest.TestCase):
-    """Testes de segurança contra Path Traversal em metadados de torrents e gravação em disco."""
+    """Security tests against Path Traversal in torrent metadata and disk writes."""
 
     def setUp(self):
         self.valid_info_hash = b"\x11" * 20
         self.valid_piece_hash = compute_sha1(b"valid piece data")
 
     def test_single_file_name_path_traversal_rejected(self):
-        """Valida que nomes contendo '..' ou caminhos relativos são rejeitados."""
+        """Validates names containing '..' or relative paths are rejected."""
         malicious_names = [
             b"../../etc/passwd",
             b"..\\..\\Windows\\System32\\calc.exe",
@@ -116,7 +116,7 @@ class TestPathTraversalSecurity(unittest.TestCase):
                 load_torrent_bytes(encode_bencode(torrent_dict))
 
     def test_name_with_null_byte_rejected(self):
-        """Valida que null bytes em nomes de arquivos são bloqueados."""
+        """Validates null bytes in filenames are blocked."""
         bad_name = b"safe_name.txt\x00.evil.exe"
         torrent_dict = {
             b"announce": b"http://tracker.local:8080/announce",
@@ -131,7 +131,7 @@ class TestPathTraversalSecurity(unittest.TestCase):
             load_torrent_bytes(encode_bencode(torrent_dict))
 
     def test_multi_file_path_traversal_segments_rejected(self):
-        """Valida que segmentos '..' em torrents multi-file são interceptados e bloqueados."""
+        """Validates '..' segments in multi-file torrents are intercepted and blocked."""
         malicious_paths = [
             [b"..", b"escape.txt"],
             [b"folder", b"..", b"escape.txt"],
@@ -155,7 +155,7 @@ class TestPathTraversalSecurity(unittest.TestCase):
                 load_torrent_bytes(encode_bencode(torrent_dict))
 
     def test_save_files_prevents_directory_escape(self):
-        """Valida que save_files impede qualquer gravação fora do diretório pretendido."""
+        """Validates save_files prevents any writing outside intended directory."""
         piece_data = b"A" * 16
         piece_hash = compute_sha1(piece_data)
         torrent_dict = {
@@ -175,16 +175,16 @@ class TestPathTraversalSecurity(unittest.TestCase):
             dest_dir = Path(tmpdir) / "subfolder"
             dest_dir.mkdir(parents=True, exist_ok=True)
 
-            # Gravação normal dentro de dest_dir deve funcionar
+            # Normal save within dest_dir should work
             client.save_files(dest_dir)
             self.assertTrue((dest_dir / "test_output.bin").is_file())
 
 
 class TestTrackerSecurityAndSSRF(unittest.TestCase):
-    """Testes de segurança contra SSRF e protocolos não confiáveis em trackers."""
+    """Security tests against SSRF and untrusted protocols in trackers."""
 
     def test_tracker_url_rejects_non_http_schemes(self):
-        """Valida que esquemas não-HTTP (file://, ftp://, javascript://) são rejeitados."""
+        """Validates non-HTTP schemes (file://, ftp://, javascript://) are rejected."""
         bad_schemes = [
             "file:///etc/passwd",
             "file:///C:/Windows/win.ini",
@@ -204,72 +204,72 @@ class TestTrackerSecurityAndSSRF(unittest.TestCase):
 
 
 class TestPeerProtocolSecurity(unittest.TestCase):
-    """Testes de segurança contra adulteração de protocolo e ataques de peers maliciosos."""
+    """Security tests against protocol tampering and malicious peer attacks."""
 
     def test_bitfield_spare_bits_tampering_rejected(self):
         """
-        Valida que peers que enviam bits sobressalentes ativos no final do bitfield
-        são rejeitados com PeerProtocolError conforme a especificação BEP 0003.
+        Validates peers sending active spare bits at bitfield end
+        are rejected with PeerProtocolError per BEP 0003 specification.
         """
-        # 10 peças = 2 bytes (bits 0..9 são peças, bits 10..15 são spare bits no byte 1)
+        # 10 pieces = 2 bytes (bits 0..9 are pieces, bits 10..15 are spare bits in byte 1)
         num_pieces = 10
-        # Byte 0: 0xFF (peças 0..7), Byte 1: 0xC0 (peças 8 e 9 ativas, spare bits 0b000000 são zero) -> Válido
+        # Byte 0: 0xFF (pieces 0..7), Byte 1: 0xC0 (pieces 8 and 9 active, spare bits 0b000000 are zero) -> Valid
         valid_bytes = b"\xff\xc0"
         bf = Bitfield(num_pieces=num_pieces, initial_bytes=valid_bytes)
         self.assertEqual(bf.count(), 10)
 
-        # Byte 1 com spare bit adulterado (0xC1 = peças 8 e 9 + spare bit 15 ativo) -> Inválido!
+        # Byte 1 with tampered spare bit (0xC1 = pieces 8 and 9 + active spare bit 15) -> Invalid!
         tampered_bytes = b"\xff\xc1"
         with self.assertRaises(PeerProtocolError) as ctx:
             Bitfield(num_pieces=num_pieces, initial_bytes=tampered_bytes)
-        self.assertIn("bits sobressalentes não-nulos", str(ctx.exception))
+        self.assertIn("non-zero spare bits", str(ctx.exception))
 
     def test_oversized_block_in_piece_message_rejected(self):
-        """Valida que PieceMessage com bloco > MAX_BLOCK_SIZE (128 KB) é rejeitada."""
+        """Validates PieceMessage with block > MAX_BLOCK_SIZE (128 KB) is rejected."""
         oversized_data = struct.pack("!II", 0, 0) + (b"X" * (MAX_BLOCK_SIZE + 1024))
         length = 1 + len(oversized_data)
         payload = bytes([7]) + oversized_data  # ID 7 = PIECE
 
         with self.assertRaises(MessageSizeError) as ctx:
             parse_message_payload(length, payload)
-        self.assertIn("excede o limite máximo", str(ctx.exception))
+        self.assertIn("exceeds maximum limit", str(ctx.exception))
 
     def test_oversized_block_in_request_message_rejected(self):
-        """Valida que RequestMessage solicitando bloco > MAX_BLOCK_SIZE é rejeitada."""
+        """Validates RequestMessage requesting block > MAX_BLOCK_SIZE is rejected."""
         req_data = struct.pack("!III", 0, 0, MAX_BLOCK_SIZE + 1024)
         length = 1 + len(req_data)
         payload = bytes([6]) + req_data  # ID 6 = REQUEST
 
         with self.assertRaises(MessageSizeError) as ctx:
             parse_message_payload(length, payload)
-        self.assertIn("excede o limite máximo", str(ctx.exception))
+        self.assertIn("exceeds maximum limit", str(ctx.exception))
 
     def test_peer_buffer_overflow_dos_prevented(self):
-        """Valida que acúmulo de bytes no buffer interno além de MAX_PEER_BUFFER_SIZE lança MessageSizeError."""
+        """Validates byte accumulation in internal buffer beyond MAX_PEER_BUFFER_SIZE raises MessageSizeError."""
         c_sock, s_sock = socket.socketpair()
 
         try:
             conn = PeerConnection(sock=c_sock, default_timeout=2.0)
-            # Injeta dados simulando buffer já quase cheio
+            # Inject data simulating buffer already nearly full
             conn._buffer = bytearray(b"A" * (MAX_PEER_BUFFER_SIZE - 100))
 
-            # Envia 200 bytes pelo socket
+            # Send 200 bytes through socket
             s_sock.sendall(b"B" * 200)
 
-            # recv_exact deve atingir o limite e levantar MessageSizeError
+            # recv_exact must hit limit and raise MessageSizeError
             with self.assertRaises(MessageSizeError) as ctx:
                 conn.recv_exact(MAX_PEER_BUFFER_SIZE + 100, timeout=1.0)
-            self.assertIn("excedeu o limite máximo seguro", str(ctx.exception))
+            self.assertIn("exceeded maximum safe limit", str(ctx.exception))
         finally:
             c_sock.close()
             s_sock.close()
 
 
 class TestPieceIntegrityAndPoisoningDefense(unittest.TestCase):
-    """Testes de integridade de peças contra envenenamento e corrupção."""
+    """Piece integrity tests against poisoning and corruption."""
 
     def test_poisoned_piece_sha1_mismatch_discarded_and_not_saved(self):
-        """Valida que peça com dados envenenados falha no SHA-1, é descartada e resetada."""
+        """Validates piece with poisoned data fails SHA-1, is discarded, and reset."""
         expected_data = b"LEGITIMATE PIECE DATA"
         expected_hash = compute_sha1(expected_data)
 
@@ -285,18 +285,18 @@ class TestPieceIntegrityAndPoisoningDefense(unittest.TestCase):
         meta = load_torrent_bytes(encode_bencode(torrent_dict))
         pm = PieceManager(meta, block_size=len(expected_data))
 
-        # Peer malicioso envia dados envenenados
+        # Malicious peer sends poisoned data
         poisoned_data = b"POISONED PIECE DATA!!"[:len(expected_data)]
         added, completed = pm.add_block(piece_index=0, begin=0, data=poisoned_data)
 
-        # Deve reportar que adicionou o bloco mas a peça NÃO foi completada nem validada
+        # Must report block was added but piece was NOT completed or validated
         self.assertTrue(added)
         self.assertFalse(completed)
         self.assertFalse(pm.is_complete)
         self.assertFalse(pm.is_piece_complete(0))
         self.assertEqual(pm.get_piece(0).state, PieceState.MISSING)
 
-        # Peer legítimo envia dados corretos posteriormente
+        # Legitimate peer sends correct data subsequently
         added, completed = pm.add_block(piece_index=0, begin=0, data=expected_data)
         self.assertTrue(added)
         self.assertTrue(completed)

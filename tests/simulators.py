@@ -1,11 +1,11 @@
 """
-Módulo de componentes simulados e fixtures para testes de integração do Simple BitTorrent Client.
+Simulated components and fixtures module for Simple BitTorrent Client integration tests.
 
-Fornece:
-1. `TorrentFixtureBuilder`: Criação programática de torrents (.torrent) single e multi-file com hashes válidos;
-2. `SimulatedTrackerServer`: Servidor HTTP de Tracker local (127.0.0.1) com suporte a registro de eventos, falhas e compact peers;
-3. `SimulatedPeerServer`: Servidor TCP de Peer local (127.0.0.1) altamente configurável (handshake, bitfield, unchoke, corrupção, quedas);
-4. `SimulatedSwarm`: Gerenciador de enxame de múltiplos peers simulados em portas locais dinâmicas.
+Provides:
+1. `TorrentFixtureBuilder`: Programmatic creation of single and multi-file torrents (.torrent) with valid hashes;
+2. `SimulatedTrackerServer`: Local HTTP Tracker server (127.0.0.1) supporting event logging, failures, and compact peers;
+3. `SimulatedPeerServer`: Highly configurable local TCP Peer server (127.0.0.1) (handshake, bitfield, unchoke, corruption, disconnects);
+4. `SimulatedSwarm`: Swarm manager for multiple simulated peers on dynamic local ports.
 """
 
 import http.server
@@ -48,12 +48,12 @@ from src.tracker import PeerInfo
 
 
 # ==============================================================================
-# 1. Construtor de Fixtures de Torrent (.torrent)
+# 1. Torrent (.torrent) Fixture Builder
 # ==============================================================================
 
 @dataclass
 class GeneratedTorrentFixture:
-    """Dados completos gerados para uma fixture de teste de torrent."""
+    """Complete generated data for a torrent test fixture."""
     torrent_bytes: bytes
     torrent_meta: TorrentMetadata
     info_hash: bytes
@@ -67,20 +67,20 @@ class GeneratedTorrentFixture:
 
 class TorrentFixtureBuilder:
     """
-    Construtor determinístico e reproduzível de arquivos e metadados .torrent.
-    Gera arquivos simples (single-file) e estruturas com diretórios aninhados (multi-file).
+    Deterministic and reproducible builder of .torrent files and metadata.
+    Generates single-file and nested multi-file directory structures.
     """
 
     @staticmethod
     def create_single_file_torrent(
         filename: str = "test_sample.dat",
         file_size: int = 64 * 1024,  # 64 KB
-        piece_length: int = 16 * 1024,  # 16 KB (4 peças)
+        piece_length: int = 16 * 1024,  # 16 KB (4 pieces)
         announce_url: str = "http://127.0.0.1:8000/announce",
         announce_list: Optional[List[List[str]]] = None,
         custom_content: Optional[bytes] = None,
     ) -> GeneratedTorrentFixture:
-        """Cria um torrent de arquivo único com conteúdo aleatório reproduzível ou customizado."""
+        """Creates a single-file torrent with reproducible random or custom content."""
         temp_dir = tempfile.TemporaryDirectory()
         temp_path = Path(temp_dir.name)
 
@@ -88,11 +88,11 @@ class TorrentFixtureBuilder:
             content = custom_content
             file_size = len(content)
         else:
-            # Conteúdo pseudoaleatório determinístico baseado no tamanho
+            # Deterministic pseudorandom content based on size
             rng = random.Random(file_size ^ 0xABCD1234)
             content = rng.randbytes(file_size)
 
-        # Calcula os hashes SHA-1 das peças
+        # Compute piece SHA-1 hashes
         piece_hashes: List[bytes] = []
         for i in range(0, len(content), piece_length):
             piece_chunk = content[i : i + piece_length]
@@ -141,11 +141,11 @@ class TorrentFixtureBuilder:
         announce_list: Optional[List[List[str]]] = None,
     ) -> GeneratedTorrentFixture:
         """
-        Cria um torrent multi-file com múltiplos arquivos e diretórios aninhados.
-        
+        Creates a multi-file torrent with multiple files and nested directories.
+
         Args:
-            root_dir_name: Nome do diretório raiz.
-            files_spec: Lista de tuplas (segmentos_de_caminho, tamanho_em_bytes).
+            root_dir_name: Root directory name.
+            files_spec: List of tuples (path_segments, size_in_bytes).
         """
         if files_spec is None:
             files_spec = [
@@ -216,12 +216,12 @@ class TorrentFixtureBuilder:
 
 
 # ==============================================================================
-# 2. Servidor de Tracker HTTP Simulado (Localhost)
+# 2. Simulated HTTP Tracker Server (Localhost)
 # ==============================================================================
 
 @dataclass
 class TrackerAnnounceRecord:
-    """Registro de uma requisição de announce recebida pelo tracker."""
+    """Record of an announce request received by the tracker."""
     info_hash: bytes
     peer_id: bytes
     port: int
@@ -235,8 +235,8 @@ class TrackerAnnounceRecord:
 
 class SimulatedTrackerServer:
     """
-    Servidor HTTP de Tracker BitTorrent local, rápido e thread-safe.
-    Executa em loopback (127.0.0.1) com porta efêmera aleatória.
+    Fast and thread-safe local BitTorrent Tracker HTTP server.
+    Runs on loopback (127.0.0.1) with a random ephemeral port.
     """
 
     def __init__(self, host: str = "127.0.0.1", port: int = 0):
@@ -247,7 +247,7 @@ class SimulatedTrackerServer:
         self.thread: Optional[threading.Thread] = None
         self.is_running = False
 
-        # Estado do tracker
+        # Tracker state
         self.lock = threading.Lock()
         self.registered_peers: List[PeerInfo] = []
         self.announces: List[TrackerAnnounceRecord] = []
@@ -261,27 +261,27 @@ class SimulatedTrackerServer:
         return f"http://{self.host}:{self.port}/announce"
 
     def set_peers(self, peers: Sequence[PeerInfo]) -> None:
-        """Define os peers que serão retornados nas consultas."""
+        """Sets peers to be returned in tracker responses."""
         with self.lock:
             self.registered_peers = list(peers)
 
     def add_peer(self, peer: PeerInfo) -> None:
-        """Adiciona um peer à lista."""
+        """Adds a peer to the list."""
         with self.lock:
             self.registered_peers.append(peer)
 
     def set_failure(self, reason: Optional[str]) -> None:
-        """Define uma razão de falha Bencode para retornar aos clientes."""
+        """Sets a Bencode failure reason to return to clients."""
         with self.lock:
             self.custom_failure_reason = reason
 
     def set_http_error(self, status_code: Optional[int]) -> None:
-        """Força o servidor a responder com um status HTTP específico (ex: 500, 404)."""
+        """Forces the server to respond with a specific HTTP status (e.g. 500, 404)."""
         with self.lock:
             self.force_http_status = status_code
 
     def get_announces(self) -> List[TrackerAnnounceRecord]:
-        """Retorna cópia das requisições registradas."""
+        """Returns a copy of recorded requests."""
         with self.lock:
             return list(self.announces)
 
@@ -291,7 +291,7 @@ class SimulatedTrackerServer:
 
         class TrackerHTTPHandler(http.server.BaseHTTPRequestHandler):
             def log_message(self, format, *args):
-                # Silencia logs padrão do HTTP server para não poluir os testes
+                # Silence default HTTP server logs to keep test output clean
                 pass
 
             def do_GET(self):
@@ -308,7 +308,7 @@ class SimulatedTrackerServer:
                     self.end_headers()
                     return
 
-                # Parse de query string sem decodificar info_hash e peer_id como UTF-8
+                # Parse query string without decoding info_hash and peer_id as UTF-8
                 raw_info_hash = b""
                 raw_peer_id = b""
                 port_val = 6881
@@ -358,7 +358,7 @@ class SimulatedTrackerServer:
                 if failure_reason is not None:
                     resp_dict = {"failure reason": failure_reason}
                 else:
-                    # Gera resposta de peers em formato compacto IPv4 (6 bytes por peer)
+                    # Generate peer response in IPv4 compact format (6 bytes per peer)
                     compact_bytes = bytearray()
                     for p in peers_to_send:
                         ip_parts = [int(x) for x in p.ip.split(".")]
@@ -401,28 +401,28 @@ class SimulatedTrackerServer:
 
 
 # ==============================================================================
-# 3. Servidor de Peer TCP Simulado (Localhost)
+# 3. Simulated TCP Peer Server (Localhost)
 # ==============================================================================
 
 @dataclass
 class PeerBehavior:
-    """Configuração granular de comportamento para um peer simulado."""
+    """Granular behavioral configuration for a simulated peer."""
     peer_id: bytes = b"-ST0001-mockpeer0001"
-    # Conjunto de índices de peças que o peer possui
+    # Set of piece indices possessed by the peer
     pieces_possessed: Optional[Set[int]] = None
-    # Se True, envia Bitfield no início; se False, envia Have para cada peça
+    # If True, sends Bitfield initially; if False, sends Have for each piece
     send_bitfield: bool = True
-    # Se True, inicia choked e depois desboqueia
+    # If True, starts choked and unchokes later
     choke_first: bool = False
     choke_delay: float = 0.05
     never_unchoke: bool = False
-    # Índices de peças a corromper intencionalmente (envia dados com hash divergente)
+    # Piece indices to intentionally corrupt (sends data with mismatched hash)
     corrupt_pieces: Set[int] = field(default_factory=set)
-    # Quantidade máxima de blocos/requests a atender antes de desconectar subitamente (-1 = ilimitado)
+    # Maximum number of blocks/requests to serve before abruptly disconnecting (-1 = unlimited)
     disconnect_after_blocks: int = -1
-    # Se True, simula handshake inválido com info_hash adulterado
+    # If True, simulates invalid handshake with tampered info_hash
     send_bad_handshake_hash: bool = False
-    # Se True, rejeita/fecha conexão no handshake
+    # If True, rejects/closes connection on handshake
     close_on_handshake: bool = False
 
     def __post_init__(self):
@@ -435,8 +435,8 @@ class PeerBehavior:
 
 class SimulatedPeerServer:
     """
-    Servidor TCP de Peer BitTorrent local rodando em loopback (127.0.0.1).
-    Capaz de atender múltiplos downloads concorrentes e simular anomalias de protocolo.
+    Local BitTorrent Peer TCP server running on loopback (127.0.0.1).
+    Capable of handling multiple concurrent downloads and simulating protocol anomalies.
     """
 
     def __init__(
@@ -454,7 +454,7 @@ class SimulatedPeerServer:
         self.thread: Optional[threading.Thread] = None
         self.is_running = False
 
-        # Métricas gravadas
+        # Recorded metrics
         self.lock = threading.Lock()
         self.connected_clients: int = 0
         self.blocks_served: int = 0
@@ -466,7 +466,7 @@ class SimulatedPeerServer:
         return PeerInfo(ip=self.host, port=self.port, peer_id=self.behavior.peer_id)
 
     def start(self) -> PeerInfo:
-        """Inicia o socket TCP do peer na porta indicada/efêmera."""
+        """Starts peer TCP socket on the designated or ephemeral port."""
         self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_sock.bind((self.host, self.port))
@@ -499,7 +499,7 @@ class SimulatedPeerServer:
     def _handle_client(self, sock: socket.socket) -> None:
         sock.settimeout(5.0)
         try:
-            # 1. Handshake do cliente (68 bytes)
+            # 1. Client handshake (68 bytes)
             hs_data = self._recv_exact(sock, 68)
             if not hs_data:
                 return
@@ -510,7 +510,7 @@ class SimulatedPeerServer:
             if self.behavior.close_on_handshake:
                 return
 
-            # 2. Responde o Handshake
+            # 2. Respond to handshake
             resp_hash = (
                 b"\x00" * 20
                 if self.behavior.send_bad_handshake_hash
@@ -531,7 +531,7 @@ class SimulatedPeerServer:
                 else set(range(num_pieces))
             )
 
-            # 3. Envia Bitfield ou Haves
+            # 3. Send Bitfield or Haves
             if self.behavior.send_bitfield and possessed:
                 bf = Bitfield(num_pieces=num_pieces)
                 for p_idx in possessed:
@@ -542,7 +542,7 @@ class SimulatedPeerServer:
                 for p_idx in sorted(possessed):
                     sock.sendall(HaveMessage(piece_index=p_idx).encode())
 
-            # 4. Controle de Choke / Unchoke
+            # 4. Choke / Unchoke control
             if self.behavior.never_unchoke:
                 sock.sendall(ChokeMessage().encode())
             elif self.behavior.choke_first:
@@ -552,7 +552,7 @@ class SimulatedPeerServer:
             else:
                 sock.sendall(UnchokeMessage().encode())
 
-            # 5. Loop de Mensagens do Cliente
+            # 5. Client message loop
             buffer = bytearray()
             blocks_sent_this_session = 0
 
@@ -587,16 +587,16 @@ class SimulatedPeerServer:
                             self.behavior.disconnect_after_blocks >= 0
                             and blocks_sent_this_session >= self.behavior.disconnect_after_blocks
                         ):
-                            # Simula desconexão abrupta
+                            # Simulate abrupt disconnection
                             return
 
-                        # Calcula fatia de dados
+                        # Calculate data slice
                         piece_start = msg.index * p_len
                         block_start = piece_start + msg.begin
                         block_end = block_start + msg.length
 
                         if msg.index in self.behavior.corrupt_pieces:
-                            # Injeta dados corrompidos
+                            # Inject corrupted data
                             block_data = b"\xFF" * msg.length
                         else:
                             block_data = self.fixture.total_data[block_start:block_end]
@@ -630,7 +630,7 @@ class SimulatedPeerServer:
         return bytes(buf)
 
     def stop(self) -> None:
-        """Encerra o socket do peer."""
+        """Closes peer socket."""
         self.is_running = False
         if self.server_sock is not None:
             try:
@@ -644,13 +644,13 @@ class SimulatedPeerServer:
 
 
 # ==============================================================================
-# 4. Gerenciador de Enxame Simulado (SimulatedSwarm)
+# 4. Simulated Swarm Manager (SimulatedSwarm)
 # ==============================================================================
 
 class SimulatedSwarm:
     """
-    Context Manager e orquestrador de enxame local contendo Tracker e múltiplos Peers.
-    Garante limpeza e encerramento determinístico de todos os sockets ao final dos testes.
+    Context manager and local swarm orchestrator containing a Tracker and multiple Peers.
+    Ensures deterministic cleanup and shutdown of all sockets at test conclusion.
     """
 
     def __init__(self, torrent_fixture: Optional[GeneratedTorrentFixture] = None):
@@ -663,9 +663,9 @@ class SimulatedSwarm:
         self.fixture = fixture
 
     def spawn_peer(self, behavior: Optional[PeerBehavior] = None) -> SimulatedPeerServer:
-        """Cria e inicia um peer no enxame."""
+        """Creates and starts a peer in the swarm."""
         if self.fixture is None:
-            raise ValueError("Fixture não configurada no SimulatedSwarm.")
+            raise ValueError("Fixture not configured in SimulatedSwarm.")
         peer = SimulatedPeerServer(self.fixture, behavior=behavior)
         peer.start()
         self.peers.append(peer)
@@ -673,11 +673,11 @@ class SimulatedSwarm:
         return peer
 
     def start(self) -> str:
-        """Retorna a announce_url do tracker."""
+        """Returns tracker announce_url."""
         return self.tracker_url
 
     def stop(self) -> None:
-        """Para todos os peers e o tracker."""
+        """Stops all peers and tracker."""
         for peer in self.peers:
             peer.stop()
         self.peers.clear()

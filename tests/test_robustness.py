@@ -1,21 +1,21 @@
 """
-Testes abrangentes de robustez e tratamento de falhas para o cliente BitTorrent.
+Comprehensive robustness and failure handling tests for BitTorrent client.
 
-Cobre cenários críticos de falha no nível correto de abstração:
-1. Peer desconectando abruptamente (EOF/Reset de conexão no meio do download);
-2. Tracker indisponível (falha de rede, timeout, erro HTTP 5xx, fallback de múltiplos trackers);
-3. Timeouts de conexão e leitura de mensagens;
-4. Resposta Bencode inválida ou truncada retornada pelo tracker;
-5. Handshake inválido (tamanho, identificador de protocolo divergente);
-6. info_hash incorreto no handshake do peer;
-7. Mensagens malformadas (tamanho excessivo, payload inconsistente com ID);
-8. Peça corrompida (falha de SHA-1 com reset automático e re-download);
-9. Bloco perdido em peer inativo e reatribuição para outro peer;
-10. Peer enviando dados inesperados (offset inválido, índice fora de alcance, tamanho incorreto);
-11. Peer permanecendo bloqueado (choked) continuamente;
-12. Torrent sem peers no enxame (NoPeersAvailableError);
-13. Retomada de arquivo parcialmente baixado (validação SHA-1 em disco);
-14. Encerramento gracioso e parada imediata de threads ativas (client.stop()).
+Covers critical failure scenarios at correct abstraction level:
+1. Peer abruptly disconnecting (EOF/connection reset mid-download);
+2. Tracker unavailable (network failure, timeout, HTTP 5xx, multi-tracker fallback);
+3. Connection and message read timeouts;
+4. Invalid or truncated Bencode response returned by tracker;
+5. Invalid handshake (size, mismatched protocol identifier);
+6. Incorrect info_hash in peer handshake;
+7. Malformed messages (oversized, payload inconsistent with ID);
+8. Corrupted piece (SHA-1 failure with automatic reset and redownload);
+9. Lost block on inactive peer and reassignment to another peer;
+10. Peer sending unexpected data (invalid offset, out-of-range index, incorrect size);
+11. Peer remaining choked continuously;
+12. Torrent with no peers in swarm (NoPeersAvailableError);
+13. Resume of partially downloaded file (disk SHA-1 validation);
+14. Graceful shutdown and immediate stop of active threads (client.stop()).
 """
 
 import socket
@@ -69,7 +69,7 @@ from src.tracker import (
 
 
 class MockHTTPResponse:
-    """Mock para respostas de requisições HTTP."""
+    """Mock for HTTP request responses."""
 
     def __init__(self, data: bytes, code: int = 200, headers: Optional[dict] = None):
         self.data = data
@@ -81,10 +81,10 @@ class MockHTTPResponse:
 
 
 class TestRobustnessEdgeCases(unittest.TestCase):
-    """Testes detalhados de robustez para falhas de rede, protocolo, integridade e concorrência."""
+    """Detailed robustness tests for network, protocol, integrity, and concurrency failures."""
 
     def setUp(self):
-        # 3 peças de 16 KB cada (total: 48 KB), blocos de 8 KB (2 blocos por peça)
+        # 3 pieces of 16 KB each (total: 48 KB), blocks of 8 KB (2 blocks per piece)
         self.piece_length = 16384
         self.block_size = 8192
         self.num_pieces = 3
@@ -111,20 +111,20 @@ class TestRobustnessEdgeCases(unittest.TestCase):
         self.torrent_meta = load_torrent_bytes(encode_bencode(self.torrent_dict))
 
     # ==========================================================================
-    # 1. Falhas de Tracker e Fallback
+    # 1. Tracker Failures and Fallback
     # ==========================================================================
 
     def test_tracker_unavailable_and_fallback(self):
         """
-        Testa se o cliente tenta o tracker secundário quando o tracker primário falha,
-        e levanta TrackerUnavailableError se todos falharem.
+        Tests whether client attempts secondary tracker when primary fails,
+        and raises TrackerUnavailableError if all fail.
         """
         attempted_urls = []
 
         def failing_opener(req, timeout=15.0):
             url = req.full_url if hasattr(req, "full_url") else str(req)
             attempted_urls.append(url)
-            # Simula tracker 1 fora do ar e tracker 2 retornando peers
+            # Simulate tracker 1 down and tracker 2 returning peers
             if "tracker1.local" in url:
                 raise TrackerConnectionError("Connection refused by tracker1")
             elif "tracker2.local" in url:
@@ -140,7 +140,7 @@ class TestRobustnessEdgeCases(unittest.TestCase):
         self.assertTrue(any("tracker2.local" in u for u in attempted_urls))
 
     def test_all_trackers_down_raises_tracker_unavailable_error(self):
-        """Testa se TrackerUnavailableError é lançado quando todos os trackers falham."""
+        """Tests whether TrackerUnavailableError is raised when all trackers fail."""
         def all_fail_opener(req, timeout=15.0):
             raise TrackerConnectionError("No route to host")
 
@@ -149,7 +149,7 @@ class TestRobustnessEdgeCases(unittest.TestCase):
             client.discover_peers()
 
     def test_invalid_bencode_from_tracker_handled_cleanly(self):
-        """Testa se resposta Bencode malformada do tracker é tratada sem crash do cliente."""
+        """Tests whether malformed tracker Bencode response is handled without crashing client."""
         def garbage_opener(req, timeout=15.0):
             return MockHTTPResponse(b"<html>502 Bad Gateway</html>")
 
@@ -158,11 +158,11 @@ class TestRobustnessEdgeCases(unittest.TestCase):
             client.discover_peers()
 
     # ==========================================================================
-    # 2. Falhas no Enxame (Sem peers disponíveis)
+    # 2. Swarm Failures (No peers available)
     # ==========================================================================
 
     def test_no_peers_in_swarm_raises_no_peers_error(self):
-        """Testa se NoPeersAvailableError é lançado quando o tracker retorna lista vazia de peers."""
+        """Tests whether NoPeersAvailableError is raised when tracker returns empty peer list."""
         def empty_peers_opener(req, timeout=15.0):
             return MockHTTPResponse(encode_bencode({b"interval": 900, b"peers": b""}))
 
@@ -171,18 +171,18 @@ class TestRobustnessEdgeCases(unittest.TestCase):
             client.download()
 
     # ==========================================================================
-    # 3. Falhas de Handshake e info_hash
+    # 3. Handshake and info_hash Failures
     # ==========================================================================
 
     def test_peer_wrong_info_hash_rejected(self):
-        """Testa se o cliente rejeita e fecha conexão quando o peer retorna outro info_hash no handshake."""
+        """Tests whether client rejects and closes connection when peer returns different info_hash in handshake."""
         c_sock, s_sock = socket.socketpair()
 
         def bad_handshake_server(sock):
             try:
                 raw_hs = sock.recv(68)
                 parse_handshake(raw_hs)
-                # Envia info_hash divergente
+                # Send mismatched info_hash
                 wrong_hash = b"\xff" * 20
                 sock.sendall(encode_handshake(wrong_hash, b"-UT2210-peerWRONGPID"))
             except Exception:
@@ -204,13 +204,13 @@ class TestRobustnessEdgeCases(unittest.TestCase):
         srv.join(timeout=2.0)
 
     def test_peer_invalid_protocol_pstr_rejected(self):
-        """Testa se handshake com protocolo divergente é rejeitado com HandshakeError."""
+        """Tests whether handshake with mismatched protocol is rejected with HandshakeError."""
         c_sock, s_sock = socket.socketpair()
 
         def bad_proto_server(sock):
             try:
                 sock.recv(68)
-                # Envia identificador de protocolo inválido (19 bytes: WrongProtoProtocol1)
+                # Send invalid protocol identifier (19 bytes: WrongProtoProtocol1)
                 bad_bytes = b"\x13WrongProtoProtocol1\x00\x00\x00\x00\x00\x00\x00\x00" + self.torrent_meta.info_hash + b"12345678901234567890"
                 sock.sendall(bad_bytes)
             except Exception:
@@ -229,11 +229,11 @@ class TestRobustnessEdgeCases(unittest.TestCase):
         srv.join(timeout=2.0)
 
     # ==========================================================================
-    # 4. Mensagens Malformadas e Violações de Protocolo
+    # 4. Malformed Messages and Protocol Violations
     # ==========================================================================
 
     def test_peer_oversized_message_rejected(self):
-        """Testa se peer enviando mensagem maior que MAX_MESSAGE_LENGTH (2 MB) é rejeitado por MessageSizeError."""
+        """Tests whether peer sending message larger than MAX_MESSAGE_LENGTH (2 MB) is rejected with MessageSizeError."""
         c_sock, s_sock = socket.socketpair()
 
         def oversized_server(sock):
@@ -241,7 +241,7 @@ class TestRobustnessEdgeCases(unittest.TestCase):
                 raw_hs = sock.recv(68)
                 parse_handshake(raw_hs)
                 sock.sendall(encode_handshake(self.torrent_meta.info_hash, b"-UT2210-peerOVERSIZ1"))
-                # Envia length prefix de 5 MB
+                # Send 5 MB length prefix
                 sock.sendall(struct.pack("!I", 5 * 1024 * 1024))
             except Exception:
                 pass
@@ -255,7 +255,7 @@ class TestRobustnessEdgeCases(unittest.TestCase):
         conn = PeerConnection(sock=c_sock, default_timeout=2.0)
         conn.perform_handshake(info_hash=client.info_hash, peer_id=client.peer_id)
 
-        # download_from_peer_connection deve detectar a violação, desconectar e retornar False
+        # download_from_peer_connection must detect violation, disconnect and return False
         success = client.download_from_peer_connection(conn)
         self.assertFalse(success)
 
@@ -263,11 +263,11 @@ class TestRobustnessEdgeCases(unittest.TestCase):
         srv.join(timeout=2.0)
 
     # ==========================================================================
-    # 5. Peer Enviando Dados Inesperados ou Malformados
+    # 5. Peer Sending Unexpected or Malformed Data
     # ==========================================================================
 
     def test_peer_sending_invalid_piece_index_or_offset(self):
-        """Testa se envio de Piece com offset inválido ou índice fora de alcance é capturado com segurança."""
+        """Tests whether sending Piece with invalid offset or out-of-range index is safely caught."""
         c_sock, s_sock = socket.socketpair()
 
         def bad_piece_server(sock):
@@ -277,7 +277,7 @@ class TestRobustnessEdgeCases(unittest.TestCase):
                 sock.sendall(encode_handshake(self.torrent_meta.info_hash, b"-UT2210-peerBADPIECE"))
                 sock.sendall(UnchokeMessage().encode())
 
-                # Aguarda Request
+                # Await Request
                 buffer = bytearray()
                 while True:
                     data = sock.recv(4096)
@@ -285,7 +285,7 @@ class TestRobustnessEdgeCases(unittest.TestCase):
                         break
                     buffer.extend(data)
                     if len(buffer) >= 17:  # 4 len + 1 id + 12 req
-                        # Envia Piece com offset completamente inválido (9999)
+                        # Send Piece with completely invalid offset (9999)
                         bad_piece = PieceMessage(index=0, begin=9999, block=b"X" * 8192)
                         sock.sendall(bad_piece.encode())
                         break
@@ -301,7 +301,7 @@ class TestRobustnessEdgeCases(unittest.TestCase):
         conn = PeerConnection(sock=c_sock, default_timeout=2.0)
         conn.perform_handshake(info_hash=client.info_hash, peer_id=client.peer_id)
 
-        # O cliente deve capturar o erro de dados malformados, desalocar requests em voo e sair
+        # Client must catch malformed data error, deallocate in-flight requests and exit
         success = client.download_from_peer_connection(conn)
         self.assertFalse(success)
         self.assertFalse(client.is_complete)
@@ -310,11 +310,11 @@ class TestRobustnessEdgeCases(unittest.TestCase):
         srv.join(timeout=2.0)
 
     # ==========================================================================
-    # 6. Peer Permanecendo Choked
+    # 6. Peer Remaining Choked
     # ==========================================================================
 
     def test_peer_remaining_choked_times_out_and_releases(self):
-        """Testa se peer que nunca envia Unchoke é liberado após timeout sem travar o cliente."""
+        """Tests whether peer that never sends Unchoke is released after timeout without hanging client."""
         c_sock, s_sock = socket.socketpair()
 
         def choked_forever_server(sock):
@@ -322,7 +322,7 @@ class TestRobustnessEdgeCases(unittest.TestCase):
                 raw_hs = sock.recv(68)
                 parse_handshake(raw_hs)
                 sock.sendall(encode_handshake(self.torrent_meta.info_hash, b"-UT2210-peerCHOKED99"))
-                # Envia Choke e não faz mais nada
+                # Send Choke and do nothing else
                 sock.sendall(ChokeMessage().encode())
                 time.sleep(2.0)
             except Exception:
@@ -337,7 +337,7 @@ class TestRobustnessEdgeCases(unittest.TestCase):
         conn = PeerConnection(sock=c_sock, default_timeout=0.5)
         conn.perform_handshake(info_hash=client.info_hash, peer_id=client.peer_id)
 
-        # O download deve sair após o timeout e não ficar em loop infinito
+        # Download must exit after timeout and not get stuck in infinite loop
         start_t = time.time()
         success = client.download_from_peer_connection(conn)
         duration = time.time() - start_t
@@ -349,20 +349,20 @@ class TestRobustnessEdgeCases(unittest.TestCase):
         srv.join(timeout=2.0)
 
     # ==========================================================================
-    # 7. Retomada de Arquivo Parcialmente Baixado (Resume)
+    # 7. Partially Downloaded File Resume
     # ==========================================================================
 
     def test_resume_partially_downloaded_file(self):
         """
-        Testa a recuperação e retomada de arquivos parcialmente baixados:
-        - Peça 0 e Peça 2 já estão válidas em disco;
-        - Peça 1 está ausente/corrompida;
-        - O cliente verifica o disco, completa as Peças 0 e 2, e baixa apenas a Peça 1.
+        Tests recovery and resume of partially downloaded files:
+        - Piece 0 and Piece 2 already valid on disk;
+        - Piece 1 is missing/corrupted;
+        - Client verifies disk, completes Pieces 0 and 2, and downloads only Piece 1.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
             out_file = Path(tmpdir) / "partial_test.bin"
 
-            # Grava arquivo parcial: Peça 0 (correta), Peça 1 (corrompida/zeros), Peça 2 (correta)
+            # Write partial file: Piece 0 (correct), Piece 1 (corrupted/zeros), Piece 2 (correct)
             partial_data = self.pieces_data[0] + (b"\x00" * self.piece_length) + self.pieces_data[2]
             out_file.write_bytes(partial_data)
 
@@ -370,17 +370,17 @@ class TestRobustnessEdgeCases(unittest.TestCase):
                 self.torrent_meta,
                 output_path=out_file,
                 block_size=self.block_size,
-                auto_resume=True,  # Ativa auto-verificação de arquivo existente
+                auto_resume=True,  # Enable auto-verification of existing file
             )
 
-            # Verifica se identificou Peças 0 e 2 como concluídas e Peça 1 como faltante
+            # Verify Pieces 0 and 2 identified as complete and Piece 1 as missing
             self.assertTrue(client.piece_manager.is_piece_complete(0))
             self.assertFalse(client.piece_manager.is_piece_complete(1))
             self.assertTrue(client.piece_manager.is_piece_complete(2))
             self.assertEqual(client.piece_manager.completed_pieces_count(), 2)
             self.assertEqual(client.piece_manager.bytes_left(), self.piece_length)
 
-            # Simula um peer que fornece a Peça 1
+            # Simulate a peer providing Piece 1
             c_sock, s_sock = socket.socketpair()
 
             def provide_piece_1_server(sock):
@@ -431,16 +431,16 @@ class TestRobustnessEdgeCases(unittest.TestCase):
 
     def test_resume_partially_downloaded_multi_file(self):
         """
-        Testa a recuperação e retomada de torrent multi-file parcialmente baixado:
-        - Estrutura com múltiplos arquivos e diretórios;
-        - Peça 0 abrange f1 e parte de f2;
-        - Valida que a checagem peça por peça identifica corretamente arquivos parciais/existentes.
+        Tests recovery and resume of partially downloaded multi-file torrent:
+        - Multi-file directory hierarchy structure;
+        - Piece 0 spans f1 and part of f2;
+        - Validates piece-by-piece check correctly identifies partial/existing files.
         """
         f1_data = b"F1_DATA_TEST_12345"  # 18 bytes
         f2_data = b"F2_DATA_TEST_XYZ_67890"  # 22 bytes
         f3_data = b"F3_DATA_FINAL_DATA_ABCDEF1"  # 26 bytes
         total_data = f1_data + f2_data + f3_data  # 66 bytes
-        piece_len = 22  # 3 peças (22, 22, 22)
+        piece_len = 22  # 3 pieces (22, 22, 22)
 
         p0_hash = compute_sha1(total_data[:22])
         p1_hash = compute_sha1(total_data[22:44])
@@ -466,9 +466,9 @@ class TestRobustnessEdgeCases(unittest.TestCase):
             base_dir = out_root / "dataset_resume"
             (base_dir / "docs").mkdir(parents=True, exist_ok=True)
 
-            # Grava f1 e f2 completos (peça 0 abrange bytes 0..21 = f1(18) + 4 bytes de f2) -> Peça 0 válida!
-            # Peça 1 abrange bytes 22..43 = f2 restantes (18 bytes) + 4 bytes de f3.
-            # Não gravamos f3 ainda -> Peça 1 e 2 incompletas.
+            # Write complete f1 and f2 (piece 0 spans bytes 0..21 = f1(18) + 4 bytes of f2) -> Piece 0 valid!
+            # Piece 1 spans bytes 22..43 = remaining f2 (18 bytes) + 4 bytes of f3.
+            # f3 not written yet -> Pieces 1 and 2 incomplete.
             (base_dir / "docs" / "f1.txt").write_bytes(f1_data)
             (base_dir / "docs" / "f2.txt").write_bytes(f2_data)
 
@@ -479,16 +479,16 @@ class TestRobustnessEdgeCases(unittest.TestCase):
                 auto_resume=True,
             )
 
-            # Peça 0 deve ter sido validada com sucesso
+            # Piece 0 must have been validated successfully
             self.assertTrue(client.piece_manager.is_piece_complete(0))
             self.assertFalse(client.piece_manager.is_piece_complete(1))
             self.assertFalse(client.piece_manager.is_piece_complete(2))
             self.assertEqual(client.piece_manager.completed_pieces_count(), 1)
 
-            # Agora gravamos f3 completo
+            # Now write complete f3
             (base_dir / "f3.bin").write_bytes(f3_data)
 
-            # Criamos novo client com auto-resume para re-verificar tudo
+            # Create new client with auto-resume to re-verify all
             client2 = TorrentClient(
                 multi_meta,
                 output_path=out_root,
@@ -501,18 +501,18 @@ class TestRobustnessEdgeCases(unittest.TestCase):
             self.assertTrue(client2.is_complete)
 
     # ==========================================================================
-    # 8. Parada Graciosa e Interrupção Instantânea de Threads
+    # 8. Graceful Shutdown and Instant Thread Interruption
     # ==========================================================================
 
     def test_client_stop_unblocks_active_connections_immediately(self):
-        """Testa se client.stop() fecha os sockets ativos e interrompe conexões bloqueadas."""
+        """Tests whether client.stop() closes active sockets and interrupts blocked connections."""
         c_sock, s_sock = socket.socketpair()
 
         def hanging_server(sock):
             try:
                 sock.recv(68)
                 sock.sendall(encode_handshake(self.torrent_meta.info_hash, b"-UT2210-peerHANG1111"))
-                time.sleep(10.0)  # Bloqueia
+                time.sleep(10.0)  # Blocks
             except Exception:
                 pass
             finally:
@@ -531,10 +531,10 @@ class TestRobustnessEdgeCases(unittest.TestCase):
         worker_thread = threading.Thread(target=client.download_from_peer_connection, args=(conn,), daemon=True)
         worker_thread.start()
 
-        # Dá tempo para o worker entrar em espera no socket
+        # Allow time for worker to enter wait on socket
         time.sleep(0.1)
 
-        # Executa client.stop()
+        # Run client.stop()
         t0 = time.time()
         client.stop()
         worker_thread.join(timeout=2.0)
