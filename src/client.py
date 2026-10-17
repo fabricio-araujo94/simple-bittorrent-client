@@ -173,11 +173,19 @@ class TorrentClient:
         """Send Have message to all active peer connections."""
         with self._active_connections_lock:
             active = list(self._active_connections)
+        dead_connections: List[PeerConnection] = []
         for conn in active:
             try:
                 conn.send_have(piece_index)
-            except (PeerConnectionError, OSError):
-                pass
+            except (PeerConnectionError, OSError) as e:
+                logger.debug(f"Failed to send Have to peer {conn.peer_host}:{conn.peer_port}: {e}")
+                dead_connections.append(conn)
+
+        if dead_connections:
+            with self._active_connections_lock:
+                for dead_conn in dead_connections:
+                    if dead_conn in self._active_connections:
+                        self._active_connections.remove(dead_conn)
 
     def check_existing_files(self, target_destination: Optional[Union[str, Path]] = None) -> int:
         """
