@@ -28,7 +28,7 @@ import socket
 import struct
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 
 # ==============================================================================
@@ -562,8 +562,101 @@ def encode_message(msg: PeerMessage) -> bytes:
 
 
 # ==============================================================================
+# ==============================================================================
 # Message Parsers
 # ==============================================================================
+
+def _parse_choke(length: int, data: bytes) -> ChokeMessage:
+    if length != 1:
+        raise MessageSizeError(f"Choke message must have length=1, got {length}.")
+    return ChokeMessage()
+
+
+def _parse_unchoke(length: int, data: bytes) -> UnchokeMessage:
+    if length != 1:
+        raise MessageSizeError(f"Unchoke message must have length=1, got {length}.")
+    return UnchokeMessage()
+
+
+def _parse_interested(length: int, data: bytes) -> InterestedMessage:
+    if length != 1:
+        raise MessageSizeError(f"Interested message must have length=1, got {length}.")
+    return InterestedMessage()
+
+
+def _parse_not_interested(length: int, data: bytes) -> NotInterestedMessage:
+    if length != 1:
+        raise MessageSizeError(f"Not Interested message must have length=1, got {length}.")
+    return NotInterestedMessage()
+
+
+def _parse_have(length: int, data: bytes) -> HaveMessage:
+    if length != 5 or len(data) != 4:
+        raise MessageSizeError(f"Have message must have length=5 (4 index bytes), got {length}.")
+    piece_index = struct.unpack("!I", data)[0]
+    return HaveMessage(piece_index=piece_index)
+
+
+def _parse_bitfield(length: int, data: bytes) -> BitfieldMessage:
+    if length < 1:
+        raise MessageSizeError(f"Bitfield message with invalid length: {length}.")
+    return BitfieldMessage(bitfield=data)
+
+
+def _parse_request(length: int, data: bytes) -> RequestMessage:
+    if length != 13 or len(data) != 12:
+        raise MessageSizeError(f"Request message must have length=13 (12-byte payload), got {length}.")
+    index, begin, block_length = struct.unpack("!III", data)
+    if block_length > MAX_BLOCK_SIZE:
+        raise MessageSizeError(
+            f"Requested block length ({block_length} bytes) exceeds maximum limit ({MAX_BLOCK_SIZE} bytes)."
+        )
+    return RequestMessage(index=index, begin=begin, length=block_length)
+
+
+def _parse_piece(length: int, data: bytes) -> PieceMessage:
+    if length < 9 or len(data) < 8:
+        raise MessageSizeError(f"Piece message must have length >= 9, got {length}.")
+    index, begin = struct.unpack("!II", data[:8])
+    block = data[8:]
+    if len(block) > MAX_BLOCK_SIZE:
+        raise MessageSizeError(
+            f"Received block length ({len(block)} bytes) exceeds maximum limit ({MAX_BLOCK_SIZE} bytes)."
+        )
+    return PieceMessage(index=index, begin=begin, block=block)
+
+
+def _parse_cancel(length: int, data: bytes) -> CancelMessage:
+    if length != 13 or len(data) != 12:
+        raise MessageSizeError(f"Cancel message must have length=13 (12-byte payload), got {length}.")
+    index, begin, block_length = struct.unpack("!III", data)
+    if block_length > MAX_BLOCK_SIZE:
+        raise MessageSizeError(
+            f"Block length in Cancel ({block_length} bytes) exceeds maximum limit ({MAX_BLOCK_SIZE} bytes)."
+        )
+    return CancelMessage(index=index, begin=begin, length=block_length)
+
+
+def _parse_port(length: int, data: bytes) -> PortMessage:
+    if length != 3 or len(data) != 2:
+        raise MessageSizeError(f"Port message must have length=3 (2-byte payload), got {length}.")
+    port = struct.unpack("!H", data)[0]
+    return PortMessage(listen_port=port)
+
+
+MESSAGE_PARSERS: Dict[int, Callable[[int, bytes], PeerMessage]] = {
+    MessageID.CHOKE: _parse_choke,
+    MessageID.UNCHOKE: _parse_unchoke,
+    MessageID.INTERESTED: _parse_interested,
+    MessageID.NOT_INTERESTED: _parse_not_interested,
+    MessageID.HAVE: _parse_have,
+    MessageID.BITFIELD: _parse_bitfield,
+    MessageID.REQUEST: _parse_request,
+    MessageID.PIECE: _parse_piece,
+    MessageID.CANCEL: _parse_cancel,
+    MessageID.PORT: _parse_port,
+}
+
 
 def parse_message_payload(length: int, payload: bytes) -> PeerMessage:
     """
@@ -587,76 +680,11 @@ def parse_message_payload(length: int, payload: bytes) -> PeerMessage:
     msg_id = payload[0]
     data = payload[1:]
 
-    if msg_id == MessageID.CHOKE:
-        if length != 1:
-            raise MessageSizeError(f"Choke message must have length=1, got {length}.")
-        return ChokeMessage()
+    parser = MESSAGE_PARSERS.get(msg_id)
+    if parser is not None:
+        return parser(length, data)
 
-    elif msg_id == MessageID.UNCHOKE:
-        if length != 1:
-            raise MessageSizeError(f"Unchoke message must have length=1, got {length}.")
-        return UnchokeMessage()
-
-    elif msg_id == MessageID.INTERESTED:
-        if length != 1:
-            raise MessageSizeError(f"Interested message must have length=1, got {length}.")
-        return InterestedMessage()
-
-    elif msg_id == MessageID.NOT_INTERESTED:
-        if length != 1:
-            raise MessageSizeError(f"Not Interested message must have length=1, got {length}.")
-        return NotInterestedMessage()
-
-    elif msg_id == MessageID.HAVE:
-        if length != 5 or len(data) != 4:
-            raise MessageSizeError(f"Have message must have length=5 (4 index bytes), got {length}.")
-        piece_index = struct.unpack("!I", data)[0]
-        return HaveMessage(piece_index=piece_index)
-
-    elif msg_id == MessageID.BITFIELD:
-        if length < 1:
-            raise MessageSizeError(f"Bitfield message with invalid length: {length}.")
-        return BitfieldMessage(bitfield=data)
-
-    elif msg_id == MessageID.REQUEST:
-        if length != 13 or len(data) != 12:
-            raise MessageSizeError(f"Request message must have length=13 (12-byte payload), got {length}.")
-        index, begin, block_length = struct.unpack("!III", data)
-        if block_length > MAX_BLOCK_SIZE:
-            raise MessageSizeError(
-                f"Requested block length ({block_length} bytes) exceeds maximum limit ({MAX_BLOCK_SIZE} bytes)."
-            )
-        return RequestMessage(index=index, begin=begin, length=block_length)
-
-    elif msg_id == MessageID.PIECE:
-        if length < 9 or len(data) < 8:
-            raise MessageSizeError(f"Piece message must have length >= 9, got {length}.")
-        index, begin = struct.unpack("!II", data[:8])
-        block = data[8:]
-        if len(block) > MAX_BLOCK_SIZE:
-            raise MessageSizeError(
-                f"Received block length ({len(block)} bytes) exceeds maximum limit ({MAX_BLOCK_SIZE} bytes)."
-            )
-        return PieceMessage(index=index, begin=begin, block=block)
-
-    elif msg_id == MessageID.CANCEL:
-        if length != 13 or len(data) != 12:
-            raise MessageSizeError(f"Cancel message must have length=13 (12-byte payload), got {length}.")
-        index, begin, block_length = struct.unpack("!III", data)
-        if block_length > MAX_BLOCK_SIZE:
-            raise MessageSizeError(
-                f"Block length in Cancel ({block_length} bytes) exceeds maximum limit ({MAX_BLOCK_SIZE} bytes)."
-            )
-        return CancelMessage(index=index, begin=begin, length=block_length)
-
-    elif msg_id == MessageID.PORT:
-        if length != 3 or len(data) != 2:
-            raise MessageSizeError(f"Port message must have length=3 (2-byte payload), got {length}.")
-        port = struct.unpack("!H", data)[0]
-        return PortMessage(listen_port=port)
-
-    else:
-        return UnknownMessage(msg_id=msg_id, payload=data)
+    return UnknownMessage(msg_id=msg_id, payload=data)
 
 
 def parse_message(raw_msg_bytes: Union[bytes, bytearray, memoryview]) -> PeerMessage:
