@@ -11,6 +11,7 @@ Ensures byte-accurate tracking of offsets in the original buffer to
 preserve the integrity of the 'info' section when calculating info_hash.
 """
 
+from functools import singledispatch
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 
@@ -337,6 +338,7 @@ def extract_info_bytes(data: Union[bytes, bytearray, memoryview]) -> bytes:
     return bytes_data[start:end]
 
 
+@singledispatch
 def encode_bencode(val: Any) -> bytes:
     """
     Encode Python objects into bytes in Bencode format.
@@ -351,49 +353,83 @@ def encode_bencode(val: Any) -> bytes:
     Raises:
         BencodeEncodeError: If type is unsupported or duplicate/invalid keys exist.
     """
-    if isinstance(val, bool):
-        raise BencodeEncodeError("Boolean type ('bool') is not supported by Bencode format.")
-    elif isinstance(val, int):
-        return f"i{val}e".encode('ascii')
-    elif isinstance(val, (bytes, bytearray, memoryview)):
-        raw = bytes(val)
-        return f"{len(raw)}:".encode('ascii') + raw
-    elif isinstance(val, str):
-        encoded = val.encode('utf-8')
-        return f"{len(encoded)}:".encode('ascii') + encoded
-    elif isinstance(val, (list, tuple)):
-        items = b"".join(encode_bencode(item) for item in val)
-        return b"l" + items + b"e"
-    elif isinstance(val, dict):
-        encoded_pairs = []
-        seen_keys = set()
-        for k, v in val.items():
-            if isinstance(k, bool):
-                raise BencodeEncodeError("Boolean key is not supported in Bencode.")
-            elif isinstance(k, (bytes, bytearray, memoryview)):
-                k_bytes = bytes(k)
-            elif isinstance(k, str):
-                k_bytes = k.encode('utf-8')
-            else:
-                raise BencodeEncodeError(
-                    f"Dictionary key must be string or bytes, got {type(k).__name__}."
-                )
-            if k_bytes in seen_keys:
-                raise BencodeEncodeError(
-                    f"Duplicate key detected when encoding dictionary: {k_bytes!r}."
-                )
-            seen_keys.add(k_bytes)
-            encoded_pairs.append((k_bytes, v))
+    raise BencodeEncodeError(f"Unsupported type for Bencode: {type(val).__name__}.")
 
-        # Strict byte lexicographical ordering
-        encoded_pairs.sort(key=lambda pair: pair[0])
 
-        result = bytearray(b"d")
-        for k_bytes, v in encoded_pairs:
-            result.extend(f"{len(k_bytes)}:".encode('ascii') + k_bytes)
-            result.extend(encode_bencode(v))
-        result.extend(b"e")
-        return bytes(result)
-    else:
-        raise BencodeEncodeError(f"Unsupported type for Bencode: {type(val).__name__}.")
+@encode_bencode.register(bool)
+def _encode_bool(val: bool) -> bytes:
+    raise BencodeEncodeError("Boolean type ('bool') is not supported by Bencode format.")
+
+
+@encode_bencode.register(int)
+def _encode_int(val: int) -> bytes:
+    return f"i{val}e".encode("ascii")
+
+
+@encode_bencode.register(bytes)
+def _encode_bytes(val: bytes) -> bytes:
+    return f"{len(val)}:".encode("ascii") + val
+
+
+@encode_bencode.register(bytearray)
+def _encode_bytearray(val: bytearray) -> bytes:
+    raw = bytes(val)
+    return f"{len(raw)}:".encode("ascii") + raw
+
+
+@encode_bencode.register(memoryview)
+def _encode_memoryview(val: memoryview) -> bytes:
+    raw = bytes(val)
+    return f"{len(raw)}:".encode("ascii") + raw
+
+
+@encode_bencode.register(str)
+def _encode_str(val: str) -> bytes:
+    encoded = val.encode("utf-8")
+    return f"{len(encoded)}:".encode("ascii") + encoded
+
+
+@encode_bencode.register(list)
+def _encode_list(val: list) -> bytes:
+    items = b"".join(encode_bencode(item) for item in val)
+    return b"l" + items + b"e"
+
+
+@encode_bencode.register(tuple)
+def _encode_tuple(val: tuple) -> bytes:
+    items = b"".join(encode_bencode(item) for item in val)
+    return b"l" + items + b"e"
+
+
+@encode_bencode.register(dict)
+def _encode_dict(val: dict) -> bytes:
+    encoded_pairs = []
+    seen_keys = set()
+    for k, v in val.items():
+        if isinstance(k, bool):
+            raise BencodeEncodeError("Boolean key is not supported in Bencode.")
+        elif isinstance(k, (bytes, bytearray, memoryview)):
+            k_bytes = bytes(k)
+        elif isinstance(k, str):
+            k_bytes = k.encode("utf-8")
+        else:
+            raise BencodeEncodeError(
+                f"Dictionary key must be string or bytes, got {type(k).__name__}."
+            )
+        if k_bytes in seen_keys:
+            raise BencodeEncodeError(
+                f"Duplicate key detected when encoding dictionary: {k_bytes!r}."
+            )
+        seen_keys.add(k_bytes)
+        encoded_pairs.append((k_bytes, v))
+
+    # Strict byte lexicographical ordering
+    encoded_pairs.sort(key=lambda pair: pair[0])
+
+    result = bytearray(b"d")
+    for k_bytes, v in encoded_pairs:
+        result.extend(f"{len(k_bytes)}:".encode("ascii") + k_bytes)
+        result.extend(encode_bencode(v))
+    result.extend(b"e")
+    return bytes(result)
 
