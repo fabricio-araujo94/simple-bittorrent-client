@@ -1,6 +1,8 @@
 """
-Pacote principal do cliente BitTorrent educacional em Python.
+Core package for the Educational BitTorrent Client in Python.
 """
+
+__version__ = "0.1.0"
 
 from .bencode import (
     BencodeDecodeError,
@@ -105,6 +107,8 @@ from .tracker import (
 )
 
 __all__ = [
+    # Version
+    "__version__",
     # Bencode
     "BencodeError",
     "BencodeDecodeError",

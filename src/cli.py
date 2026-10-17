@@ -11,6 +11,7 @@ import sys
 import time
 from pathlib import Path
 
+from . import __version__
 from .client import DownloadError, DownloadProgress, TorrentClient
 from .torrent import TorrentError, load_torrent_file
 
@@ -81,6 +82,11 @@ def build_progress_bar(progress: DownloadProgress, start_time: float) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Educational BitTorrent Client in Pure Python (BEP 0003, BEP 0023)."
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     parser.add_argument(
         "torrent",
