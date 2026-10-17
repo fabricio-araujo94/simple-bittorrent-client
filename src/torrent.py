@@ -9,7 +9,7 @@ and calculates the SHA-1 info_hash over the raw bytes of the 'info' section.
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 from .bencode import BencodeError, decode_bencode_with_offsets
 from .hash_utils import compute_sha1, verify_sha1
@@ -181,7 +181,7 @@ def load_torrent_bytes(raw_bytes: Union[bytes, bytearray, memoryview]) -> Torren
     info_hash = compute_sha1(raw_info_bytes)
     info_hash_hex = info_hash.hex()
 
-    # 3. Extract and validate announce and announce-list (BEP 0012)
+def _parse_trackers(root_dict: Dict[bytes, Any]) -> Tuple[Optional[str], List[List[str]], List[str]]:
     announce: Optional[str] = None
     if b"announce" in root_dict:
         announce_raw = root_dict[b"announce"]
@@ -213,13 +213,11 @@ def load_torrent_bytes(raw_bytes: Union[bytes, bytearray, memoryview]) -> Torren
             if tier_urls:
                 announce_list.append(tier_urls)
 
-    # Validate presence of at least one tracker
     if announce is None and not announce_list:
         raise TorrentValidationError(
             ".torrent file must contain at least one valid tracker ('announce' or 'announce-list')."
         )
 
-    # Build unique deduplicated list of all available trackers
     trackers_set = set()
     all_trackers: List[str] = []
     if announce:
@@ -231,24 +229,10 @@ def load_torrent_bytes(raw_bytes: Union[bytes, bytearray, memoryview]) -> Torren
                 trackers_set.add(tr)
                 all_trackers.append(tr)
 
-    # 4. Extract and validate 'name' with Path Traversal protection
-    if b"name" not in info:
-        raise TorrentValidationError("Required 'name' field not found in 'info' section.")
-    name_raw = info[b"name"]
-    if not isinstance(name_raw, bytes):
-        raise TorrentValidationError("'name' field in 'info' section must be a byte string.")
-    name = validate_safe_path_segment(name_raw.decode('utf-8', errors='replace'))
+    return announce, announce_list, all_trackers
 
-    # 5. Extract and validate 'piece length'
-    if b"piece length" not in info:
-        raise TorrentValidationError("Required 'piece length' field not found in 'info' section.")
-    piece_length = info[b"piece length"]
-    if not isinstance(piece_length, int) or isinstance(piece_length, bool) or piece_length <= 0:
-        raise TorrentValidationError(
-            f"'piece length' field must be a strictly positive integer (> 0), got: {piece_length!r}."
-        )
 
-    # 6. Extract and validate files (Single-file vs Multi-file)
+def _parse_files_info(info: Dict[bytes, Any], name: str) -> Tuple[List[FileInfo], bool, int]:
     has_length = b"length" in info
     has_files = b"files" in info
 
@@ -262,9 +246,6 @@ def load_torrent_bytes(raw_bytes: Union[bytes, bytearray, memoryview]) -> Torren
         )
 
     files_list: List[FileInfo] = []
-    is_multi_file = False
-    total_length = 0
-
     if has_length:
         length_val = info[b"length"]
         if not isinstance(length_val, int) or isinstance(length_val, bool) or length_val < 0:
@@ -284,6 +265,7 @@ def load_torrent_bytes(raw_bytes: Union[bytes, bytearray, memoryview]) -> Torren
                 "'files' field in multi-file must be a non-empty list of files."
             )
         is_multi_file = True
+        total_length = 0
         for f_idx, file_dict in enumerate(raw_files):
             if not isinstance(file_dict, dict):
                 raise TorrentValidationError(f"Item {f_idx} in 'files' must be a dictionary.")
@@ -318,7 +300,12 @@ def load_torrent_bytes(raw_bytes: Union[bytes, bytearray, memoryview]) -> Torren
             files_list.append(FileInfo(length=f_len, path=path_segments, full_path=full_path, md5sum=f_md5))
             total_length += f_len
 
-    # 7. Extract and validate 'pieces' field and split into SHA-1 hashes
+    return files_list, is_multi_file, total_length
+
+
+def _parse_and_validate_pieces(
+    info: Dict[bytes, Any], total_length: int, piece_length: int
+) -> Tuple[bytes, List[bytes]]:
     if b"pieces" not in info:
         raise TorrentValidationError("Required 'pieces' field not found in 'info' section.")
     pieces_raw = info[b"pieces"]
@@ -332,9 +319,7 @@ def load_torrent_bytes(raw_bytes: Union[bytes, bytearray, memoryview]) -> Torren
 
     piece_hashes = [pieces_raw[i : i + 20] for i in range(0, len(pieces_raw), 20)]
 
-    # 8. Mathematical consistency validation: total_length vs piece_length vs num_pieces
     expected_pieces = math.ceil(total_length / piece_length) if total_length > 0 else 0
-
     if total_length > 0 and len(piece_hashes) == 0:
         raise TorrentValidationError(
             f"Torrent with total size of {total_length} bytes has no hashes in 'pieces'."
@@ -349,7 +334,12 @@ def load_torrent_bytes(raw_bytes: Union[bytes, bytearray, memoryview]) -> Torren
             f"of {total_length} bytes (piece_length={piece_length}), but 'pieces' contains {len(piece_hashes)} hashes."
         )
 
-    # 9. Extract optional metadata
+    return pieces_raw, piece_hashes
+
+
+def _parse_optional_metadata(
+    root_dict: Dict[bytes, Any], info: Dict[bytes, Any]
+) -> Tuple[Optional[str], Optional[str], Optional[int], bool]:
     comment = None
     if b"comment" in root_dict and isinstance(root_dict[b"comment"], bytes):
         comment = root_dict[b"comment"].decode('utf-8', errors='replace')
@@ -365,6 +355,76 @@ def load_torrent_bytes(raw_bytes: Union[bytes, bytearray, memoryview]) -> Torren
     private = False
     if b"private" in info and isinstance(info[b"private"], int) and not isinstance(info[b"private"], bool):
         private = (info[b"private"] == 1)
+
+    return comment, created_by, creation_date, private
+
+
+def load_torrent_bytes(raw_bytes: Union[bytes, bytearray, memoryview]) -> TorrentMetadata:
+    """
+    Decode byte buffer of a .torrent file, validate all required fields,
+    extract announce / announce-list, split pieces into SHA-1 hashes,
+    calculate info_hash, and construct TorrentMetadata with security checks.
+    """
+    if not isinstance(raw_bytes, (bytes, bytearray, memoryview)):
+        raise TorrentParseError(
+            f"Expected input as bytes, got {type(raw_bytes).__name__}."
+        )
+
+    bytes_data = bytes(raw_bytes)
+    if not bytes_data:
+        raise TorrentParseError(".torrent file buffer is empty.")
+
+    try:
+        root_dict, _, raw_slices = decode_bencode_with_offsets(bytes_data)
+    except BencodeError as e:
+        raise TorrentParseError(f"Error decoding torrent Bencode structure: {e}") from e
+
+    if not isinstance(root_dict, dict):
+        raise TorrentValidationError(".torrent file must contain a Bencode dictionary at root.")
+
+    # 1. Validate 'info' section and extract exact raw slice
+    if b"info" not in root_dict or b"info" not in raw_slices:
+        raise TorrentValidationError("Required 'info' dictionary not found in .torrent file.")
+
+    info_start, info_end = raw_slices[b"info"]
+    raw_info_bytes = bytes_data[info_start:info_end]
+
+    info = root_dict[b"info"]
+    if not isinstance(info, dict):
+        raise TorrentValidationError("Torrent 'info' section must be a dictionary.")
+
+    # 2. Compute SHA-1 info_hash over exact raw bytes
+    info_hash = compute_sha1(raw_info_bytes)
+    info_hash_hex = info_hash.hex()
+
+    # 3. Extract and validate announce and announce-list (BEP 0012)
+    announce, announce_list, all_trackers = _parse_trackers(root_dict)
+
+    # 4. Extract and validate 'name' with Path Traversal protection
+    if b"name" not in info:
+        raise TorrentValidationError("Required 'name' field not found in 'info' section.")
+    name_raw = info[b"name"]
+    if not isinstance(name_raw, bytes):
+        raise TorrentValidationError("'name' field in 'info' section must be a byte string.")
+    name = validate_safe_path_segment(name_raw.decode('utf-8', errors='replace'))
+
+    # 5. Extract and validate 'piece length'
+    if b"piece length" not in info:
+        raise TorrentValidationError("Required 'piece length' field not found in 'info' section.")
+    piece_length = info[b"piece length"]
+    if not isinstance(piece_length, int) or isinstance(piece_length, bool) or piece_length <= 0:
+        raise TorrentValidationError(
+            f"'piece length' field must be a strictly positive integer (> 0), got: {piece_length!r}."
+        )
+
+    # 6. Extract and validate files (Single-file vs Multi-file)
+    files_list, is_multi_file, total_length = _parse_files_info(info, name)
+
+    # 7. Extract and validate 'pieces' field and split into SHA-1 hashes
+    pieces_raw, piece_hashes = _parse_and_validate_pieces(info, total_length, piece_length)
+
+    # 8. Extract optional metadata
+    comment, created_by, creation_date, private = _parse_optional_metadata(root_dict, info)
 
     return TorrentMetadata(
         announce=announce,
