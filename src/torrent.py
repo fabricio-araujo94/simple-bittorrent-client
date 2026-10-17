@@ -465,3 +465,25 @@ def load_torrent_file(filepath: Union[str, Path]) -> TorrentMetadata:
     return load_torrent_bytes(raw_bytes)
 
 
+def ensure_torrent_metadata(
+    torrent: Union[TorrentMetadata, bytes, bytearray, memoryview, str, Path],
+) -> TorrentMetadata:
+    """
+    Ensure the input is converted to a TorrentMetadata instance.
+
+    Accepts:
+    - TorrentMetadata directly
+    - Path or str (reads file and decodes)
+    - bytes, bytearray, memoryview (decodes raw Bencode bytes)
+    """
+    if isinstance(torrent, TorrentMetadata):
+        return torrent
+    elif isinstance(torrent, (str, Path)):
+        return load_torrent_file(torrent)
+    elif isinstance(torrent, (bytes, bytearray, memoryview)):
+        return load_torrent_bytes(torrent)
+    else:
+        raise TypeError(f"Invalid type for torrent argument: {type(torrent).__name__}.")
+
+
+

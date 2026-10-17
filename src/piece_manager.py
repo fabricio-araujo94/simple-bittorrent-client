@@ -24,6 +24,7 @@ from .peer import DEFAULT_BLOCK_SIZE, Bitfield
 from .torrent import (
     TorrentMetadata,
     TorrentSecurityError,
+    ensure_torrent_metadata,
     load_torrent_bytes,
     load_torrent_file,
 )
@@ -327,14 +328,7 @@ class PieceManager:
 
         resolved_meta: Optional[TorrentMetadata] = None
         if torrent is not None:
-            if isinstance(torrent, TorrentMetadata):
-                resolved_meta = torrent
-            elif isinstance(torrent, (str, Path)):
-                resolved_meta = load_torrent_file(torrent)
-            elif isinstance(torrent, (bytes, bytearray, memoryview)):
-                resolved_meta = load_torrent_bytes(torrent)
-            else:
-                raise TypeError(f"Invalid type for torrent: {type(torrent).__name__}.")
+            resolved_meta = ensure_torrent_metadata(torrent)
 
         self.metadata: Optional[TorrentMetadata] = resolved_meta
         if resolved_meta is not None:

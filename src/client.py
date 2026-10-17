@@ -52,7 +52,13 @@ from .peer import (
     UnchokeMessage,
 )
 from .piece_manager import PieceManager, PieceState
-from .torrent import FileInfo, TorrentMetadata, load_torrent_bytes, load_torrent_file
+from .torrent import (
+    FileInfo,
+    TorrentMetadata,
+    ensure_torrent_metadata,
+    load_torrent_bytes,
+    load_torrent_file,
+)
 from .tracker import HTTPTrackerClient, PeerInfo, TrackerError, TrackerResponse
 
 logger = logging.getLogger("simple_bittorrent.client")
@@ -110,14 +116,7 @@ class TorrentClient:
         auto_resume: bool = False,
     ):
         # 1. Load and validate torrent metadata
-        if isinstance(torrent, TorrentMetadata):
-            self.torrent_meta = torrent
-        elif isinstance(torrent, (str, Path)):
-            self.torrent_meta = load_torrent_file(torrent)
-        elif isinstance(torrent, (bytes, bytearray, memoryview)):
-            self.torrent_meta = load_torrent_bytes(torrent)
-        else:
-            raise TypeError(f"Invalid type for torrent argument: {type(torrent).__name__}.")
+        self.torrent_meta = ensure_torrent_metadata(torrent)
 
         self.info_hash = self.torrent_meta.info_hash
         self.output_path = Path(output_path) if output_path else None

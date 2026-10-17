@@ -28,7 +28,12 @@ from typing import Any, Callable, Dict, List, Optional, Union
 logger = logging.getLogger("simple_bittorrent.tracker")
 
 from .bencode import BencodeError, decode_bencode
-from .torrent import TorrentMetadata, load_torrent_bytes, load_torrent_file
+from .torrent import (
+    TorrentMetadata,
+    ensure_torrent_metadata,
+    load_torrent_bytes,
+    load_torrent_file,
+)
 
 
 # ==============================================================================
@@ -639,16 +644,7 @@ class HTTPTrackerClient:
         self.torrent_meta: Optional[TorrentMetadata] = None
 
         if torrent is not None:
-            if isinstance(torrent, TorrentMetadata):
-                self.torrent_meta = torrent
-            elif isinstance(torrent, (str, Path)):
-                self.torrent_meta = load_torrent_file(torrent)
-            elif isinstance(torrent, (bytes, bytearray, memoryview)):
-                self.torrent_meta = load_torrent_bytes(torrent)
-            else:
-                raise TypeError(
-                    f"Invalid type for torrent argument: {type(torrent).__name__}."
-                )
+            self.torrent_meta = ensure_torrent_metadata(torrent)
 
         # Resolve info_hash
         resolved_info_hash = info_hash

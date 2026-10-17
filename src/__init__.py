@@ -83,6 +83,7 @@ from .torrent import (
     TorrentMetadata,
     TorrentParseError,
     TorrentValidationError,
+    ensure_torrent_metadata,
     load_torrent_bytes,
     load_torrent_file,
 )
@@ -130,6 +131,7 @@ __all__ = [
     "TorrentMetadata",
     "load_torrent_bytes",
     "load_torrent_file",
+    "ensure_torrent_metadata",
     # Tracker
     "TrackerError",
     "TrackerConnectionError",
