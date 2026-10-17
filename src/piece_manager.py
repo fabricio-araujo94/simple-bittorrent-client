@@ -12,6 +12,7 @@ Responsibilities:
 - Ordered reconstruction of file/torrent data.
 """
 
+import random
 import threading
 from dataclasses import dataclass
 from enum import Enum
@@ -562,7 +563,6 @@ class PieceManager:
             #    - Lowest availability (Rarest First)
             #    - Tie-breaker: lowest piece index (or random if tie_breaker="random")
             if tie_breaker == "random":
-                import random
                 eligible_pieces.sort(
                     key=lambda p: (
                         1 if p.state == PieceState.MISSING else 0,
