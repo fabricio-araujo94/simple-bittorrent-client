@@ -198,12 +198,12 @@ class BencodeDecoder:
         return self._data[start_str:end_str], end_str
 
     def _parse_list(self, idx: int, depth: int = 0) -> Tuple[list, int]:
-        curr = idx + 1
+        cursor = idx + 1
         result = []
-        while curr < self._len:
-            if self._data[curr : curr + 1] == b'e':
-                return result, curr + 1
-            item, curr = self._parse_at(curr, depth=depth + 1)
+        while cursor < self._len:
+            if self._data[cursor : cursor + 1] == b'e':
+                return result, cursor + 1
+            item, cursor = self._parse_at(cursor, depth=depth + 1)
             result.append(item)
 
         raise BencodeTruncatedError(
@@ -213,47 +213,47 @@ class BencodeDecoder:
     def _parse_dict(
         self, idx: int, depth: int = 0, current_path: Tuple[bytes, ...] = ()
     ) -> Tuple[dict, int]:
-        curr = idx + 1
+        cursor = idx + 1
         result = {}
         last_key: Optional[bytes] = None
 
-        while curr < self._len:
-            if self._data[curr : curr + 1] == b'e':
-                return result, curr + 1
+        while cursor < self._len:
+            if self._data[cursor : cursor + 1] == b'e':
+                return result, cursor + 1
 
             # Bencode dictionary keys MUST be byte strings
-            first_byte = self._data[curr : curr + 1]
+            first_byte = self._data[cursor : cursor + 1]
             if not first_byte.isdigit():
                 raise BencodeDecodeError(
-                    f"Bencode dictionary key must be a string at offset {curr} (found {first_byte!r})."
+                    f"Bencode dictionary key must be a string at offset {cursor} (found {first_byte!r})."
                 )
 
-            key, curr = self._parse_string(curr)
+            key, cursor = self._parse_string(cursor)
 
             # Strict validation of lexicographical key order (BEP 0003)
             if last_key is not None:
                 if key == last_key:
                     raise BencodeDecodeError(
-                        f"Duplicate key in Bencode dictionary: {key!r} at offset {curr}."
+                        f"Duplicate key in Bencode dictionary: {key!r} at offset {cursor}."
                     )
                 if key < last_key:
                     raise BencodeDecodeError(
                         f"Dictionary keys out of lexicographical order: "
-                        f"{last_key!r} appeared before {key!r} at offset {curr}."
+                        f"{last_key!r} appeared before {key!r} at offset {cursor}."
                     )
 
             last_key = key
 
             # If buffer ends immediately after key, value is missing
-            if curr >= self._len:
+            if cursor >= self._len:
                 raise BencodeTruncatedError(
-                    f"Truncated Bencode dictionary: missing value for key {key!r} at offset {curr}."
+                    f"Truncated Bencode dictionary: missing value for key {key!r} at offset {cursor}."
                 )
 
-            val_start = curr
+            val_start = cursor
             val_path = current_path + (key,)
-            val, curr = self._parse_at(curr, depth=depth + 1, current_path=val_path)
-            val_end = curr
+            val, cursor = self._parse_at(cursor, depth=depth + 1, current_path=val_path)
+            val_end = cursor
 
             result[key] = val
 
