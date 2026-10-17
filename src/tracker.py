@@ -23,7 +23,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 logger = logging.getLogger("simple_bittorrent.tracker")
 
@@ -107,7 +107,7 @@ class TrackerResponse:
     complete: Optional[int] = None        # Seeders
     incomplete: Optional[int] = None      # Leechers
     warning_message: Optional[str] = None
-    raw_dict: Optional[dict] = None
+    raw_dict: Optional[Dict[bytes, Any]] = None
 
     @property
     def num_peers(self) -> int:
@@ -301,7 +301,7 @@ def parse_compact_peers_ipv4(peers_bytes: Union[bytes, bytearray, memoryview]) -
     return peers
 
 
-def parse_dictionary_peers(peers_list: list) -> List[PeerInfo]:
+def parse_dictionary_peers(peers_list: List[Dict[bytes, Any]]) -> List[PeerInfo]:
     """
     Decode peer list in traditional dictionary format (BEP 0003).
 
