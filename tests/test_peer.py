@@ -496,16 +496,20 @@ class TestPeerConnectionWithSocketpair(unittest.TestCase):
 
         # Initial state
         self.assertTrue(conn.am_choking)
+        self.assertTrue(conn.client_choking)
         self.assertFalse(conn.am_interested)
+        self.assertFalse(conn.client_interested)
         self.assertTrue(conn.peer_choking)
         self.assertFalse(conn.peer_interested)
 
         # Client sends unchoke and interested
         conn.send_unchoke()
         self.assertFalse(conn.am_choking)
+        self.assertFalse(conn.client_choking)
 
         conn.send_interested()
         self.assertTrue(conn.am_interested)
+        self.assertTrue(conn.client_interested)
 
         # Server reads and validates
         data = self.s_server.recv(1024)

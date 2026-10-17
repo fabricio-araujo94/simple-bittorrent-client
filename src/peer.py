@@ -782,6 +782,24 @@ class PeerConnection:
             self._sock.settimeout(self.default_timeout)
 
     @property
+    def client_choking(self) -> bool:
+        """Alias for am_choking to maintain standardized naming."""
+        return self.am_choking
+
+    @client_choking.setter
+    def client_choking(self, value: bool) -> None:
+        self.am_choking = value
+
+    @property
+    def client_interested(self) -> bool:
+        """Alias for am_interested to maintain standardized naming."""
+        return self.am_interested
+
+    @client_interested.setter
+    def client_interested(self, value: bool) -> None:
+        self.am_interested = value
+
+    @property
     def is_connected(self) -> bool:
         """Check whether socket is instantiated."""
         return self._sock is not None
