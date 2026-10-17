@@ -13,6 +13,7 @@ Implements the BitTorrent HTTP announce specification (BEP 0003, BEP 0023):
 """
 
 import gzip
+import logging
 import random
 import socket
 import string
@@ -23,6 +24,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Union
+
+logger = logging.getLogger("simple_bittorrent.tracker")
 
 from .bencode import BencodeError, decode_bencode
 from .torrent import TorrentMetadata, load_torrent_bytes, load_torrent_file
@@ -511,8 +514,8 @@ def execute_http_get(
         if is_gzip:
             try:
                 raw_bytes = gzip.decompress(raw_bytes)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to decompress gzip tracker response: {e}")
 
         return raw_bytes
 
