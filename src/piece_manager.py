@@ -17,7 +17,7 @@ import threading
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple, Union
+from typing import Iterator, List, Optional, Sequence, Tuple, Union
 
 from .hash_utils import verify_sha1
 from .peer import DEFAULT_BLOCK_SIZE, Bitfield
@@ -607,6 +607,29 @@ class PieceManager:
         """Return validated data of an individual piece."""
         with self._lock:
             return self.get_piece(piece_index).get_data()
+
+    def iter_pieces_data(self) -> Iterator[Tuple[int, bytes]]:
+        """
+        Yield (piece_index, piece_data) sequentially for all verified pieces.
+
+        Enables memory-efficient streaming of completed pieces to disk
+        without requiring a monolithic concatenated buffer of the entire torrent.
+
+        Raises:
+            ValueError: If download is not yet 100% complete.
+        """
+        with self._lock:
+            if not self.is_complete:
+                raise ValueError(
+                    f"Cannot stream data: incomplete download "
+                    f"({self.completed_pieces_count()}/{self.num_pieces} pieces downloaded)."
+                )
+
+            for i, p in enumerate(self.pieces):
+                data = p.get_data()
+                if data is None:
+                    raise ValueError(f"Piece {i} marked complete but has no data.")
+                yield i, data
 
     def get_all_data(self) -> bytes:
         """

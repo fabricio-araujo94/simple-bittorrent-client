@@ -456,6 +456,23 @@ class TestPieceManager(unittest.TestCase):
             self.assertEqual(out_file1.read_bytes(), file1_data)
             self.assertEqual(out_file2.read_bytes(), file2_data)
 
+    def test_iter_pieces_data(self):
+        """Tests sequential streaming of piece data with iter_pieces_data."""
+        # When incomplete, iter_pieces_data should raise ValueError
+        with self.assertRaises(ValueError):
+            list(self.pm.iter_pieces_data())
+
+        # Complete all pieces
+        self.pm.verify_piece(0, self.p0_data)
+        self.pm.verify_piece(1, self.p1_data)
+        self.pm.verify_piece(2, self.p2_data)
+
+        self.assertTrue(self.pm.is_complete)
+        streamed = list(self.pm.iter_pieces_data())
+        self.assertEqual(len(streamed), self.pm.num_pieces)
+        reconstructed = b"".join(piece_data for _, piece_data in streamed)
+        self.assertEqual(reconstructed, self.full_torrent_data)
+
 
 if __name__ == "__main__":
     unittest.main()
