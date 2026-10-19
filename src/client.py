@@ -312,6 +312,76 @@ class TorrentClient:
             raise TrackerUnavailableError(f"All trackers are unreachable: {last_error}") from last_error
         return []
 
+    def _send_in_flight_requests(
+        self,
+        conn: PeerConnection,
+        in_flight: Dict[Tuple[int, int], int],
+        max_in_flight: int,
+    ) -> None:
+        """Send pending block requests up to max_in_flight limit if unchoked."""
+        if conn.peer_choking:
+            return
+
+        while len(in_flight) < max_in_flight and not self.piece_manager.is_complete and not self._stop_requested:
+            req = self.piece_manager.get_next_block_to_request(peer_bitfield=conn.peer_bitfield)
+            if req is None:
+                break
+            piece_idx, begin, length = req
+            try:
+                conn.send_request(index=piece_idx, begin=begin, length=length)
+                in_flight[(piece_idx, begin)] = length
+            except Exception:
+                self.piece_manager.reset_block(piece_idx, begin)
+                raise
+
+    def _handle_incoming_peer_message(
+        self,
+        conn: PeerConnection,
+        msg: PeerMessage,
+        in_flight: Dict[Tuple[int, int], int],
+        registered_bitfield: Optional[Bitfield],
+        on_progress: Optional[Callable[[DownloadProgress], None]],
+    ) -> Optional[Bitfield]:
+        """Process incoming peer protocol message and update state/in-flight maps."""
+        if isinstance(msg, PieceMessage):
+            in_flight.pop((msg.index, msg.begin), None)
+            _, completed = self.piece_manager.add_block(
+                piece_index=msg.index,
+                begin=msg.begin,
+                data=msg.block,
+            )
+            if completed:
+                self._broadcast_have(msg.index)
+            if on_progress is not None:
+                on_progress(self.get_progress())
+
+        elif isinstance(msg, ChokeMessage):
+            conn.peer_choking = True
+            for (p_idx, b_begin) in list(in_flight.keys()):
+                self.piece_manager.reset_block(p_idx, b_begin)
+            in_flight.clear()
+
+        elif isinstance(msg, UnchokeMessage):
+            conn.peer_choking = False
+
+        elif isinstance(msg, HaveMessage):
+            if conn.peer_bitfield is None:
+                conn.peer_bitfield = Bitfield(num_pieces=self.torrent_meta.num_pieces)
+                registered_bitfield = conn.peer_bitfield
+            if msg.piece_index < conn.peer_bitfield.num_pieces:
+                if not conn.peer_bitfield.has_piece(msg.piece_index):
+                    conn.peer_bitfield.set_piece(msg.piece_index, True)
+                    self.piece_manager.update_peer_have(msg.piece_index)
+
+        elif isinstance(msg, BitfieldMessage):
+            if registered_bitfield is not None:
+                self.piece_manager.remove_peer_bitfield(registered_bitfield)
+            conn.peer_bitfield = msg.to_bitfield(self.torrent_meta.num_pieces)
+            registered_bitfield = conn.peer_bitfield
+            self.piece_manager.add_peer_bitfield(registered_bitfield)
+
+        return registered_bitfield
+
     def download_from_peer_connection(
         self,
         conn: PeerConnection,
@@ -353,19 +423,8 @@ class TorrentClient:
                 if 0 < max_blocks_per_iteration < iteration:
                     break
 
-                # 1. If peer is unchoked, send requests up to in-flight limit (Pipelining)
-                if not conn.peer_choking:
-                    while len(in_flight) < effective_max_in_flight and not self.piece_manager.is_complete and not self._stop_requested:
-                        req = self.piece_manager.get_next_block_to_request(peer_bitfield=conn.peer_bitfield)
-                        if req is None:
-                            break
-                        piece_idx, begin, length = req
-                        try:
-                            conn.send_request(index=piece_idx, begin=begin, length=length)
-                            in_flight[(piece_idx, begin)] = length
-                        except Exception:
-                            self.piece_manager.reset_block(piece_idx, begin)
-                            raise
+                # 1. Pipeline requests up to in_flight limit
+                self._send_in_flight_requests(conn, in_flight, effective_max_in_flight)
 
                 # 2. Decide how to read from socket based on in-flight requests
                 if len(in_flight) == 0:
@@ -374,11 +433,9 @@ class TorrentClient:
                         try:
                             msg = conn.read_message(timeout=self.peer_timeout)
                         except PeerTimeoutError:
-                            # Peer stayed choked for too long: release worker for another peer
                             logger.debug(f"Peer {conn.peer_host}:{conn.peer_port} remained choked after timeout.")
                             break
                     else:
-                        # Unchoked, but no block could be requested right now (e.g. pieces in-flight on other peers)
                         consecutive_no_requests += 1
                         if consecutive_no_requests >= 50:
                             break
@@ -388,61 +445,16 @@ class TorrentClient:
                             time.sleep(0.02)
                             continue
                 else:
-                    # Requests are in-flight: wait for response from peer
                     consecutive_no_requests = 0
                     msg = conn.read_message(timeout=self.peer_timeout)
 
                 # 3. Process received message
-                if isinstance(msg, PieceMessage):
-                    in_flight.pop((msg.index, msg.begin), None)
+                registered_bitfield = self._handle_incoming_peer_message(
+                    conn, msg, in_flight, registered_bitfield, on_progress
+                )
 
-                    added, completed = self.piece_manager.add_block(
-                        piece_index=msg.index,
-                        begin=msg.begin,
-                        data=msg.block,
-                    )
-
-                    if completed:
-                        # Piece successfully validated via SHA-1: notify other peers
-                        self._broadcast_have(msg.index)
-
-                    if on_progress is not None:
-                        on_progress(self.get_progress())
-
-                    if self.piece_manager.is_complete:
-                        break
-
-                elif isinstance(msg, ChokeMessage):
-                    conn.peer_choking = True
-                    # Peer choked us: release in-flight blocks so other peers can download
-                    for (p_idx, b_begin) in list(in_flight.keys()):
-                        self.piece_manager.reset_block(p_idx, b_begin)
-                    in_flight.clear()
-
-                elif isinstance(msg, UnchokeMessage):
-                    conn.peer_choking = False
+                if not isinstance(msg, KeepAliveMessage):
                     consecutive_no_requests = 0
-
-                elif isinstance(msg, HaveMessage):
-                    if conn.peer_bitfield is None:
-                        conn.peer_bitfield = Bitfield(num_pieces=self.torrent_meta.num_pieces)
-                        registered_bitfield = conn.peer_bitfield
-                    if msg.piece_index < conn.peer_bitfield.num_pieces:
-                        if not conn.peer_bitfield.has_piece(msg.piece_index):
-                            conn.peer_bitfield.set_piece(msg.piece_index, True)
-                            self.piece_manager.update_peer_have(msg.piece_index)
-                    consecutive_no_requests = 0
-
-                elif isinstance(msg, BitfieldMessage):
-                    if registered_bitfield is not None:
-                        self.piece_manager.remove_peer_bitfield(registered_bitfield)
-                    conn.peer_bitfield = msg.to_bitfield(self.torrent_meta.num_pieces)
-                    registered_bitfield = conn.peer_bitfield
-                    self.piece_manager.add_peer_bitfield(registered_bitfield)
-                    consecutive_no_requests = 0
-
-                elif isinstance(msg, KeepAliveMessage):
-                    pass
 
             return self.piece_manager.is_complete
 
