@@ -154,6 +154,74 @@ def urlencode_binary(data: Union[bytes, bytearray, memoryview]) -> str:
 # Announce URL Construction
 # ==============================================================================
 
+def _validate_announce_params(
+    base_url: str,
+    info_hash: Union[bytes, bytearray, memoryview],
+    peer_id: Union[bytes, str],
+    port: int,
+    uploaded: int,
+    downloaded: int,
+    left: int,
+) -> Tuple[bytes, bytes]:
+    if not isinstance(base_url, str) or not base_url.strip():
+        raise ValueError("Tracker base URL cannot be empty.")
+
+    if not isinstance(info_hash, (bytes, bytearray, memoryview)):
+        raise TypeError(f"info_hash must be bytes, got {type(info_hash).__name__}.")
+    info_hash_bytes = bytes(info_hash)
+    if len(info_hash_bytes) != 20:
+        raise ValueError(f"info_hash must be exactly 20 bytes, got {len(info_hash_bytes)} bytes.")
+
+    if isinstance(peer_id, str):
+        peer_id_bytes = peer_id.encode("utf-8")
+    elif isinstance(peer_id, (bytes, bytearray, memoryview)):
+        peer_id_bytes = bytes(peer_id)
+    else:
+        raise TypeError(f"peer_id must be str or bytes, got {type(peer_id).__name__}.")
+    if len(peer_id_bytes) != 20:
+        raise ValueError(f"peer_id must be exactly 20 bytes, got {len(peer_id_bytes)} bytes.")
+
+    if not isinstance(port, int) or isinstance(port, bool) or not (0 < port <= 65535):
+        raise ValueError(f"port must be an integer between 1 and 65535, got {port!r}.")
+
+    for name, val in [("uploaded", uploaded), ("downloaded", downloaded), ("left", left)]:
+        if not isinstance(val, int) or isinstance(val, bool) or val < 0:
+            raise ValueError(f"{name} must be a non-negative integer (>= 0), got {val!r}.")
+
+    return info_hash_bytes, peer_id_bytes
+
+
+def _build_optional_announce_params(
+    no_peer_id: Optional[bool] = None,
+    event: Optional[str] = None,
+    numwant: Optional[int] = None,
+    ip: Optional[str] = None,
+    key: Optional[str] = None,
+    trackerid: Optional[str] = None,
+) -> List[str]:
+    params: List[str] = []
+    if no_peer_id is not None:
+        params.append(f"no_peer_id={1 if no_peer_id else 0}")
+
+    if event:
+        event_str = event.strip()
+        if event_str:
+            params.append(f"event={urllib.parse.quote(event_str, safe='')}")
+
+    if numwant is not None:
+        if not isinstance(numwant, int) or isinstance(numwant, bool) or numwant < 0:
+            raise ValueError(f"numwant must be a non-negative integer (>= 0), got {numwant!r}.")
+        params.append(f"numwant={numwant}")
+
+    for name, val in [("ip", ip), ("key", key), ("trackerid", trackerid)]:
+        if val is not None:
+            val_str = val.strip()
+            if val_str:
+                params.append(f"{name}={urllib.parse.quote(val_str, safe='')}")
+
+    return params
+
+
 def build_announce_url(
     base_url: str,
     info_hash: Union[bytes, bytearray, memoryview],
@@ -187,36 +255,10 @@ def build_announce_url(
     Raises:
         ValueError / TypeError: If any parameter is invalid or has an incorrect type.
     """
-    if not isinstance(base_url, str) or not base_url.strip():
-        raise ValueError("Tracker base URL cannot be empty.")
+    info_hash_bytes, peer_id_bytes = _validate_announce_params(
+        base_url, info_hash, peer_id, port, uploaded, downloaded, left
+    )
 
-    # 1. info_hash: must be exactly 20 bytes
-    if not isinstance(info_hash, (bytes, bytearray, memoryview)):
-        raise TypeError(f"info_hash must be bytes, got {type(info_hash).__name__}.")
-    info_hash_bytes = bytes(info_hash)
-    if len(info_hash_bytes) != 20:
-        raise ValueError(f"info_hash must be exactly 20 bytes, got {len(info_hash_bytes)} bytes.")
-
-    # 2. peer_id: must be exactly 20 bytes
-    if isinstance(peer_id, str):
-        peer_id_bytes = peer_id.encode("utf-8")
-    elif isinstance(peer_id, (bytes, bytearray, memoryview)):
-        peer_id_bytes = bytes(peer_id)
-    else:
-        raise TypeError(f"peer_id must be str or bytes, got {type(peer_id).__name__}.")
-    if len(peer_id_bytes) != 20:
-        raise ValueError(f"peer_id must be exactly 20 bytes, got {len(peer_id_bytes)} bytes.")
-
-    # 3. port: 1-65535
-    if not isinstance(port, int) or isinstance(port, bool) or not (0 < port <= 65535):
-        raise ValueError(f"port must be an integer between 1 and 65535, got {port!r}.")
-
-    # 4. uploaded, downloaded, left: integers >= 0
-    for name, val in [("uploaded", uploaded), ("downloaded", downloaded), ("left", left)]:
-        if not isinstance(val, int) or isinstance(val, bool) or val < 0:
-            raise ValueError(f"{name} must be a non-negative integer (>= 0), got {val!r}.")
-
-    # Parameter assembly
     query_params: List[str] = [
         f"info_hash={urlencode_binary(info_hash_bytes)}",
         f"peer_id={urlencode_binary(peer_id_bytes)}",
@@ -227,33 +269,16 @@ def build_announce_url(
         f"compact={1 if compact else 0}",
     ]
 
-    if no_peer_id is not None:
-        query_params.append(f"no_peer_id={1 if no_peer_id else 0}")
-
-    if event:
-        event_str = event.strip()
-        if event_str:
-            query_params.append(f"event={urllib.parse.quote(event_str, safe='')}")
-
-    if numwant is not None:
-        if not isinstance(numwant, int) or isinstance(numwant, bool) or numwant < 0:
-            raise ValueError(f"numwant must be a non-negative integer (>= 0), got {numwant!r}.")
-        query_params.append(f"numwant={numwant}")
-
-    if ip is not None:
-        ip_str = ip.strip()
-        if ip_str:
-            query_params.append(f"ip={urllib.parse.quote(ip_str, safe='')}")
-
-    if key is not None:
-        key_str = key.strip()
-        if key_str:
-            query_params.append(f"key={urllib.parse.quote(key_str, safe='')}")
-
-    if trackerid is not None:
-        trackerid_str = trackerid.strip()
-        if trackerid_str:
-            query_params.append(f"trackerid={urllib.parse.quote(trackerid_str, safe='')}")
+    query_params.extend(
+        _build_optional_announce_params(
+            no_peer_id=no_peer_id,
+            event=event,
+            numwant=numwant,
+            ip=ip,
+            key=key,
+            trackerid=trackerid,
+        )
+    )
 
     clean_base = base_url.strip()
     parsed_base = urllib.parse.urlparse(clean_base)
@@ -265,7 +290,6 @@ def build_announce_url(
         raise TrackerError(f"Invalid tracker URL (missing hostname): {clean_base!r}.")
 
     query_string = "&".join(query_params)
-
     if "?" in clean_base:
         if clean_base.endswith("?") or clean_base.endswith("&"):
             return f"{clean_base}{query_string}"
