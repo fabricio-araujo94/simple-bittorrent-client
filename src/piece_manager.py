@@ -750,5 +750,7 @@ class PieceManager:
                 target_file = dest
 
             target_file.parent.mkdir(parents=True, exist_ok=True)
-            target_file.write_bytes(data)
+            with open(target_file, "wb") as out_f:
+                for _, piece_chunk in self.iter_pieces_data():
+                    out_f.write(piece_chunk)
 
