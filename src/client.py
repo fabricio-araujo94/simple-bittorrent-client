@@ -59,7 +59,13 @@ from .torrent import (
     load_torrent_bytes,
     load_torrent_file,
 )
-from .tracker import HTTPTrackerClient, PeerInfo, TrackerError, TrackerResponse
+from .tracker import (
+    HTTPTrackerClient,
+    HTTPOpenerType,
+    PeerInfo,
+    TrackerError,
+    TrackerResponse,
+)
 
 logger = logging.getLogger("simple_bittorrent.client")
 
@@ -112,7 +118,7 @@ class TorrentClient:
         max_in_flight: int = 4,
         peer_timeout: float = 10.0,
         tracker_timeout: float = 15.0,
-        http_opener: Optional[Any] = None,
+        http_opener: Optional[HTTPOpenerType] = None,
         auto_resume: bool = False,
     ):
         # 1. Load and validate torrent metadata

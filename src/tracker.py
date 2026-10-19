@@ -23,9 +23,20 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Protocol, Union, runtime_checkable
 
 logger = logging.getLogger("simple_bittorrent.tracker")
+
+
+@runtime_checkable
+class HTTPOpener(Protocol):
+    """Protocol for custom HTTP openers compatible with urllib.request.OpenerDirector."""
+
+    def open(self, fullurl: Any, data: Any = None, timeout: float = ...) -> Any:
+        ...
+
+
+HTTPOpenerType = Union[HTTPOpener, Callable[..., Any]]
 
 from .bencode import BencodeError, decode_bencode
 from .torrent import (
@@ -540,7 +551,7 @@ def execute_http_get(
     url: str,
     timeout: float = 15.0,
     user_agent: str = "SimpleBitTorrent/1.0",
-    opener: Optional[Any] = None,
+    opener: Optional[HTTPOpenerType] = None,
 ) -> bytes:
     """
     Execute an HTTP GET request using urllib and return response body as bytes.
@@ -624,7 +635,7 @@ def query_http_tracker(
     trackerid: Optional[str] = None,
     timeout: float = 15.0,
     user_agent: str = "SimpleBitTorrent/1.0",
-    opener: Optional[Any] = None,
+    opener: Optional[HTTPOpenerType] = None,
 ) -> TrackerResponse:
     """
     Direct utility function to query an HTTP tracker, execute announce,
@@ -675,7 +686,7 @@ class HTTPTrackerClient:
         peer_id: Optional[Union[bytes, str]] = None,
         port: int = 6881,
         user_agent: str = "SimpleBitTorrent/1.0",
-        opener: Optional[Any] = None,
+        opener: Optional[HTTPOpenerType] = None,
     ):
         self.torrent_meta: Optional[TorrentMetadata] = None
 
