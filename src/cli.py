@@ -79,7 +79,8 @@ def build_progress_bar(progress: DownloadProgress, start_time: float) -> str:
     )
 
 
-def main() -> None:
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Build and return argument parser for simple-bittorrent CLI."""
     parser = argparse.ArgumentParser(
         description="Educational BitTorrent Client in Pure Python (BEP 0003, BEP 0023)."
     )
@@ -150,32 +151,11 @@ def main() -> None:
         action="store_true",
         help="Enable detailed debug logs",
     )
+    return parser
 
-    args = parser.parse_args()
 
-    if args.verbose:
-        logging.basicConfig(
-            level=logging.DEBUG,
-            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        )
-    else:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(message)s",
-        )
-
-    if not args.torrent.exists():
-        print(f"[ERROR] Torrent file not found: {args.torrent}", file=sys.stderr)
-        sys.exit(1)
-
-    if args.info:
-        print_torrent_info(args.torrent)
-        sys.exit(0)
-
-    print_torrent_info(args.torrent)
-
-    output_dir = args.output if args.output is not None else Path.cwd()
-
+def run_download(args: argparse.Namespace, output_dir: Path) -> None:
+    """Execute download flow with progress reporting and user interrupt handling."""
     print(f"[*] Download destination: {output_dir.resolve()}")
     print(f"[*] Concurrent connections (workers): {args.workers}")
     print(f"[*] Pipelining per peer (in-flight): {args.max_in_flight} blocks of 16 KB")
@@ -217,6 +197,35 @@ def main() -> None:
         print(f"\n\n[ERROR] Download failed: {e}", file=sys.stderr)
         client.stop()
         sys.exit(1)
+
+
+def main() -> None:
+    parser = build_arg_parser()
+    args = parser.parse_args()
+
+    if args.verbose:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        )
+    else:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(message)s",
+        )
+
+    if not args.torrent.exists():
+        print(f"[ERROR] Torrent file not found: {args.torrent}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.info:
+        print_torrent_info(args.torrent)
+        sys.exit(0)
+
+    print_torrent_info(args.torrent)
+
+    output_dir = args.output if args.output is not None else Path.cwd()
+    run_download(args, output_dir)
 
 
 if __name__ == "__main__":
