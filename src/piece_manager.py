@@ -722,12 +722,13 @@ class PieceManager:
         - Multi-file torrents: saves all files preserving directory hierarchy specified
           by metadata under provided base directory.
         """
-        data = self.get_all_data()
         dest = Path(target_path).resolve()
 
         if self.metadata is not None and self.metadata.is_multi_file:
             base_dir = (dest / self.metadata.name).resolve() if dest.name != self.metadata.name else dest
-            offset = 0
+
+            # Prepare files list with security verification and opened file descriptors
+            files_to_write = []
             for file_info in self.metadata.files:
                 file_path = base_dir.joinpath(*file_info.path).resolve()
                 try:
@@ -736,9 +737,39 @@ class PieceManager:
                     raise TorrentSecurityError(f"Path Traversal attempt when saving file: {file_path}")
 
                 file_path.parent.mkdir(parents=True, exist_ok=True)
-                file_data = data[offset : offset + file_info.length]
-                file_path.write_bytes(file_data)
-                offset += file_info.length
+                files_to_write.append((file_path, file_info.length))
+
+            file_idx = 0
+            file_written = 0
+            cur_file = None
+
+            try:
+                for _, piece_chunk in self.iter_pieces_data():
+                    piece_offset = 0
+                    piece_left = len(piece_chunk)
+
+                    while piece_left > 0 and file_idx < len(files_to_write):
+                        f_path, f_len = files_to_write[file_idx]
+
+                        if cur_file is None:
+                            cur_file = open(f_path, "wb")
+                            file_written = 0
+
+                        needed = f_len - file_written
+                        write_amount = min(piece_left, needed)
+
+                        cur_file.write(piece_chunk[piece_offset : piece_offset + write_amount])
+                        piece_offset += write_amount
+                        piece_left -= write_amount
+                        file_written += write_amount
+
+                        if file_written >= f_len:
+                            cur_file.close()
+                            cur_file = None
+                            file_idx += 1
+            finally:
+                if cur_file is not None and not cur_file.closed:
+                    cur_file.close()
         else:
             if self.metadata is not None and not self.metadata.is_multi_file and dest.is_dir():
                 target_file = (dest / self.metadata.name).resolve()
