@@ -462,6 +462,56 @@ def parse_tracker_response(raw_response: Union[bytes, bytearray, memoryview]) ->
 # HTTP Request Execution with urllib
 # ==============================================================================
 
+def _decompress_response_if_gzip(resp: Any, raw_bytes: bytes) -> bytes:
+    """Decompress raw response bytes if gzip encoding is detected."""
+    is_gzip = False
+    if hasattr(resp, "headers") and resp.headers:
+        content_encoding = resp.headers.get("Content-Encoding", "").lower()
+        if "gzip" in content_encoding:
+            is_gzip = True
+
+    if not is_gzip and len(raw_bytes) >= 2 and raw_bytes[:2] == b"\x1f\x8b":
+        is_gzip = True
+
+    if is_gzip:
+        try:
+            return gzip.decompress(raw_bytes)
+        except Exception as e:
+            logger.debug(f"Failed to decompress gzip tracker response: {e}")
+
+    return raw_bytes
+
+
+def _handle_tracker_http_error(e: urllib.error.HTTPError) -> None:
+    """Parse potential Bencoded failure reason from HTTP error body or raise TrackerHTTPError."""
+    body = b""
+    try:
+        body = e.read()
+    except Exception:
+        pass
+
+    if body:
+        try:
+            parsed = decode_bencode(body, strict=False)
+            if isinstance(parsed, dict) and b"failure reason" in parsed:
+                reason_bytes = parsed[b"failure reason"]
+                reason = (
+                    bytes(reason_bytes).decode("utf-8", errors="replace")
+                    if isinstance(reason_bytes, (bytes, bytearray))
+                    else str(reason_bytes)
+                )
+                raise TrackerFailureError(reason) from e
+        except TrackerFailureError:
+            raise
+        except Exception:
+            pass
+
+    raise TrackerHTTPError(
+        f"Tracker returned HTTP error {e.code}: {e.reason}",
+        status_code=e.code,
+    ) from e
+
+
 def execute_http_get(
     url: str,
     timeout: float = 15.0,
@@ -505,50 +555,12 @@ def execute_http_get(
             resp = urllib.request.urlopen(req, timeout=timeout)
 
         raw_bytes = resp.read()
-
-        # Automatic gzip decompression if returned
-        is_gzip = False
-        if hasattr(resp, "headers") and resp.headers:
-            content_encoding = resp.headers.get("Content-Encoding", "").lower()
-            if "gzip" in content_encoding:
-                is_gzip = True
-
-        if not is_gzip and len(raw_bytes) >= 2 and raw_bytes[:2] == b"\x1f\x8b":
-            is_gzip = True
-
-        if is_gzip:
-            try:
-                raw_bytes = gzip.decompress(raw_bytes)
-            except Exception as e:
-                logger.debug(f"Failed to decompress gzip tracker response: {e}")
-
-        return raw_bytes
+        return _decompress_response_if_gzip(resp, raw_bytes)
 
     except urllib.error.HTTPError as e:
         resp = e
-        # If HTTP server returns body with Bencoded 'failure reason' (e.g. 400 or 403)
-        body = b""
-        try:
-            body = e.read()
-        except Exception:
-            pass
-
-        if body:
-            try:
-                parsed = decode_bencode(body, strict=False)
-                if isinstance(parsed, dict) and b"failure reason" in parsed:
-                    reason_bytes = parsed[b"failure reason"]
-                    reason = bytes(reason_bytes).decode("utf-8", errors="replace") if isinstance(reason_bytes, (bytes, bytearray)) else str(reason_bytes)
-                    raise TrackerFailureError(reason) from e
-            except TrackerFailureError:
-                raise
-            except Exception:
-                pass
-
-        raise TrackerHTTPError(
-            f"Tracker returned HTTP error {e.code}: {e.reason}",
-            status_code=e.code,
-        ) from e
+        _handle_tracker_http_error(e)
+        return b""  # Unreachable but keeps type checker satisfied
 
     except urllib.error.URLError as e:
         if isinstance(e.reason, (socket.timeout, TimeoutError)) or "timed out" in str(e.reason).lower():
