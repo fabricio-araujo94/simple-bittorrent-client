@@ -859,6 +859,27 @@ class PeerConnection:
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self.close()
 
+    def _read_chunk_from_socket(self, needed: int) -> bytes:
+        """Read a data chunk from the connected socket with error mapping."""
+        read_size = max(4096, needed)
+        try:
+            data = self._sock.recv(read_size)
+        except (socket.timeout, TimeoutError) as e:
+            raise PeerTimeoutError(
+                f"Timeout waiting for {needed} bytes from peer ({self.peer_host}:{self.peer_port})."
+            ) from e
+        except socket.error as e:
+            raise PeerConnectionError(
+                f"Socket error receiving data from peer: {e}"
+            ) from e
+
+        if not data:
+            raise PeerConnectionClosedError(
+                f"Connection closed by peer ({self.peer_host}:{self.peer_port}) before receiving requested bytes "
+                f"(missing {needed} bytes)."
+            )
+        return data
+
     def recv_exact(self, n: int, timeout: Optional[float] = None) -> bytes:
         """
         Read exactly N bytes from connection or internal buffer.
@@ -891,24 +912,7 @@ class PeerConnection:
         try:
             while len(self._buffer) < n:
                 needed = n - len(self._buffer)
-                read_size = max(4096, needed)
-                try:
-                    data = self._sock.recv(read_size)
-                except (socket.timeout, TimeoutError) as e:
-                    raise PeerTimeoutError(
-                        f"Timeout waiting for {needed} bytes from peer ({self.peer_host}:{self.peer_port})."
-                    ) from e
-                except socket.error as e:
-                    raise PeerConnectionError(
-                        f"Socket error receiving data from peer: {e}"
-                    ) from e
-
-                if not data:
-                    raise PeerConnectionClosedError(
-                        f"Connection closed by peer ({self.peer_host}:{self.peer_port}) before receiving {n} bytes "
-                        f"(got {len(self._buffer)} bytes, missing {needed} bytes)."
-                    )
-
+                data = self._read_chunk_from_socket(needed)
                 self._buffer.extend(data)
                 if len(self._buffer) > MAX_PEER_BUFFER_SIZE:
                     raise MessageSizeError(
