@@ -402,6 +402,54 @@ def parse_dictionary_peers(peers_list: List[Dict[bytes, Any]]) -> List[PeerInfo]
     return peers
 
 
+def _extract_tracker_peers(data: Dict[bytes, Any]) -> List[PeerInfo]:
+    """Extract peers from compact IPv4 bytes or dictionary list format."""
+    if b"peers" not in data:
+        return []
+
+    raw_peers = data[b"peers"]
+    if isinstance(raw_peers, (bytes, bytearray)):
+        return parse_compact_peers_ipv4(raw_peers)
+    elif isinstance(raw_peers, list):
+        return parse_dictionary_peers(raw_peers)
+    else:
+        raise TrackerResponseError(
+            f"Invalid format for 'peers' field: expected bytes or list, got {type(raw_peers).__name__}."
+        )
+
+
+def _extract_tracker_optional_fields(data: Dict[bytes, Any]) -> Dict[str, Any]:
+    """Extract optional metadata fields from tracker response dictionary."""
+    min_interval = None
+    if b"min interval" in data and isinstance(data[b"min interval"], int) and not isinstance(data[b"min interval"], bool):
+        min_interval = data[b"min interval"]
+
+    tracker_id = None
+    if b"tracker id" in data and isinstance(data[b"tracker id"], (bytes, bytearray, str)):
+        raw_tid = data[b"tracker id"]
+        tracker_id = bytes(raw_tid).decode("utf-8", errors="replace") if isinstance(raw_tid, (bytes, bytearray)) else raw_tid
+
+    complete = None
+    if b"complete" in data and isinstance(data[b"complete"], int) and not isinstance(data[b"complete"], bool):
+        complete = data[b"complete"]
+
+    incomplete = None
+    if b"incomplete" in data and isinstance(data[b"incomplete"], int) and not isinstance(data[b"incomplete"], bool):
+        incomplete = data[b"incomplete"]
+
+    warning_message = None
+    if b"warning message" in data and isinstance(data[b"warning message"], (bytes, bytearray)):
+        warning_message = bytes(data[b"warning message"]).decode("utf-8", errors="replace")
+
+    return {
+        "min_interval": min_interval,
+        "tracker_id": tracker_id,
+        "complete": complete,
+        "incomplete": incomplete,
+        "warning_message": warning_message,
+    }
+
+
 def parse_tracker_response(raw_response: Union[bytes, bytearray, memoryview]) -> TrackerResponse:
     """
     Decode and validate Bencoded response received from an HTTP tracker (BEP 0003, BEP 0023).
@@ -447,48 +495,19 @@ def parse_tracker_response(raw_response: Union[bytes, bytearray, memoryview]) ->
         )
 
     # 3. Extract peers (compact or list of dictionaries)
-    peers: List[PeerInfo] = []
-    if b"peers" in data:
-        raw_peers = data[b"peers"]
-        if isinstance(raw_peers, (bytes, bytearray)):
-            peers = parse_compact_peers_ipv4(raw_peers)
-        elif isinstance(raw_peers, list):
-            peers = parse_dictionary_peers(raw_peers)
-        else:
-            raise TrackerResponseError(
-                f"Invalid format for 'peers' field: expected bytes or list, got {type(raw_peers).__name__}."
-            )
+    peers = _extract_tracker_peers(data)
 
     # 4. Extract optional specification fields
-    min_interval = None
-    if b"min interval" in data and isinstance(data[b"min interval"], int) and not isinstance(data[b"min interval"], bool):
-        min_interval = data[b"min interval"]
-
-    tracker_id = None
-    if b"tracker id" in data and isinstance(data[b"tracker id"], (bytes, bytearray, str)):
-        raw_tid = data[b"tracker id"]
-        tracker_id = bytes(raw_tid).decode("utf-8", errors="replace") if isinstance(raw_tid, (bytes, bytearray)) else raw_tid
-
-    complete = None
-    if b"complete" in data and isinstance(data[b"complete"], int) and not isinstance(data[b"complete"], bool):
-        complete = data[b"complete"]
-
-    incomplete = None
-    if b"incomplete" in data and isinstance(data[b"incomplete"], int) and not isinstance(data[b"incomplete"], bool):
-        incomplete = data[b"incomplete"]
-
-    warning_message = None
-    if b"warning message" in data and isinstance(data[b"warning message"], (bytes, bytearray)):
-        warning_message = bytes(data[b"warning message"]).decode("utf-8", errors="replace")
+    opts = _extract_tracker_optional_fields(data)
 
     return TrackerResponse(
         interval=interval_val,
         peers=peers,
-        min_interval=min_interval,
-        tracker_id=tracker_id,
-        complete=complete,
-        incomplete=incomplete,
-        warning_message=warning_message,
+        min_interval=opts["min_interval"],
+        tracker_id=opts["tracker_id"],
+        complete=opts["complete"],
+        incomplete=opts["incomplete"],
+        warning_message=opts["warning_message"],
         raw_dict=data,
     )
 
