@@ -210,62 +210,67 @@ class TorrentClient:
             base_dir = dest / self.torrent_meta.name if not dest.name == self.torrent_meta.name else dest
             if not base_dir.is_dir():
                 return 0
+            return self._verify_multi_file_existing_pieces(base_dir)
 
-            # Map each file to its global offsets [start_offset, end_offset)
-            file_spans = []
-            cur_offset = 0
-            for file_info in self.torrent_meta.files:
-                file_path = base_dir.joinpath(*file_info.path)
-                file_spans.append((cur_offset, cur_offset + file_info.length, file_path, file_info.length))
-                cur_offset += file_info.length
+    def _verify_multi_file_existing_pieces(self, base_dir: Path) -> int:
+        """
+        Validate pieces spanning multiple files on disk for auto-resume.
+        Streams piece data with O(piece_length) memory consumption.
+        """
+        # Map each file to its global offsets [start_offset, end_offset)
+        file_spans = []
+        cur_offset = 0
+        for file_info in self.torrent_meta.files:
+            file_path = base_dir.joinpath(*file_info.path)
+            file_spans.append((cur_offset, cur_offset + file_info.length, file_path, file_info.length))
+            cur_offset += file_info.length
 
-            valid_count = 0
-            opened_files = {}
-            try:
-                piece_offset = 0
-                for piece_index in range(self.torrent_meta.num_pieces):
-                    piece_len = self.torrent_meta.get_piece_length(piece_index)
-                    piece_end = piece_offset + piece_len
-                    piece_buf = bytearray(piece_len)
+        valid_count = 0
+        opened_files = {}
+        try:
+            piece_offset = 0
+            for piece_index in range(self.torrent_meta.num_pieces):
+                piece_len = self.torrent_meta.get_piece_length(piece_index)
+                piece_end = piece_offset + piece_len
+                piece_buf = bytearray(piece_len)
 
-                    for f_start, f_end, f_path, f_len in file_spans:
-                        if f_end <= piece_offset or f_start >= piece_end:
-                            continue
+                for f_start, f_end, f_path, f_len in file_spans:
+                    if f_end <= piece_offset or f_start >= piece_end:
+                        continue
 
-                        # Overlap interval within torrent global offsets
-                        overlap_start = max(piece_offset, f_start)
-                        overlap_end = min(piece_end, f_end)
-                        read_len = overlap_end - overlap_start
+                    # Overlap interval within torrent global offsets
+                    overlap_start = max(piece_offset, f_start)
+                    overlap_end = min(piece_end, f_end)
+                    read_len = overlap_end - overlap_start
 
-                        file_seek_pos = overlap_start - f_start
-                        piece_buf_pos = overlap_start - piece_offset
+                    file_seek_pos = overlap_start - f_start
+                    piece_buf_pos = overlap_start - piece_offset
 
-                        if f_path.is_file():
-                            if f_path not in opened_files:
-                                opened_files[f_path] = open(f_path, "rb")
-                            f = opened_files[f_path]
-                            f.seek(file_seek_pos)
-                            chunk = f.read(read_len)
-                            piece_buf[piece_buf_pos : piece_buf_pos + len(chunk)] = chunk
-                            # If file is smaller than expected, remaining remains 0x00
-                        else:
-                            # File does not exist on disk, remains 0x00
-                            pass
-
-                    if self.piece_manager.verify_piece(piece_index, bytes(piece_buf)):
-                        valid_count += 1
-
-                    piece_offset += piece_len
-            except OSError:
-                pass
-            finally:
-                for f in opened_files.values():
-                    try:
-                        f.close()
-                    except OSError:
+                    if f_path.is_file():
+                        if f_path not in opened_files:
+                            opened_files[f_path] = open(f_path, "rb")
+                        f = opened_files[f_path]
+                        f.seek(file_seek_pos)
+                        chunk = f.read(read_len)
+                        piece_buf[piece_buf_pos : piece_buf_pos + len(chunk)] = chunk
+                    else:
+                        # File does not exist on disk, remains 0x00
                         pass
 
-            return valid_count
+                if self.piece_manager.verify_piece(piece_index, bytes(piece_buf)):
+                    valid_count += 1
+
+                piece_offset += piece_len
+        except OSError:
+            pass
+        finally:
+            for f in opened_files.values():
+                try:
+                    f.close()
+                except OSError:
+                    pass
+
+        return valid_count
 
     def get_progress(self) -> DownloadProgress:
         """Return current download progress."""
