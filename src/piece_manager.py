@@ -189,16 +189,8 @@ class Piece:
 
             # Check if all blocks are completed
             if self.is_all_blocks_received():
-                # Assemble complete piece data in order
-                assembled = self._assemble_blocks()
-                if verify_sha1(assembled, self.expected_hash):
-                    self._data = assembled
-                    self.state = PieceState.COMPLETED
-                    return True, True
-                else:
-                    # Hash validation failure (corrupted data)
-                    self.reset()
-                    return True, False
+                is_valid = self.validate()
+                return True, is_valid
             else:
                 self.state = PieceState.DOWNLOADING
                 return True, False
