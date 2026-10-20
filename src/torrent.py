@@ -9,7 +9,7 @@ and calculates the SHA-1 info_hash over the raw bytes of the 'info' section.
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .bencode import BencodeError, decode_bencode_with_offsets
 from .hash_utils import compute_sha1, verify_sha1
