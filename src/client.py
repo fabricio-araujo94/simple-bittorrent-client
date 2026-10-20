@@ -585,8 +585,10 @@ class TorrentClient:
                         on_progress=on_progress,
                         max_in_flight=max_in_flight,
                     )
+                except (PeerError, OSError) as e:
+                    logger.debug(f"Peer error with {peer.ip}:{peer.port}: {e}")
                 except Exception as e:
-                    logger.debug(f"Error in peer worker ({peer.ip}:{peer.port}): {e}")
+                    logger.warning(f"Unexpected error in peer worker ({peer.ip}:{peer.port}): {e}", exc_info=True)
 
         num_workers = min(max(1, max_workers), len(available_peers))
         threads: List[threading.Thread] = []
