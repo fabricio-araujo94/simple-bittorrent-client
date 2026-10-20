@@ -46,6 +46,7 @@ from .peer import (
     PeerConnectionClosedError,
     PeerConnectionError,
     PeerError,
+    PeerMessage,
     PeerProtocolError,
     PeerTimeoutError,
     PieceMessage,
@@ -691,4 +692,3 @@ class TorrentClient:
             )
         except Exception:
             pass
-
