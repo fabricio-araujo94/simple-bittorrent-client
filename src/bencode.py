@@ -138,7 +138,7 @@ class BencodeDecoder:
                 )
 
         try:
-            val = int(int_bytes.decode('ascii'))
+            val = int(int_bytes.decode("ascii"))
             return val, end_idx + 1
         except ValueError:
             raise BencodeDecodeError(f"Invalid numerical value {int_bytes!r} at offset {idx}.")
@@ -176,7 +176,7 @@ class BencodeDecoder:
             )
 
         try:
-            length = int(length_bytes.decode('ascii'))
+            length = int(length_bytes.decode("ascii"))
         except ValueError:
             raise BencodeDecodeError(f"Invalid string length {length_bytes!r} at offset {idx}.")
 
